@@ -1,0 +1,167 @@
+{
+  "pack": "mco-drain-troubleshooting-pack",
+  "revision": "enhanced-2026-11-03",
+  "operating_decisions": {
+    "trigger": [
+      "alert",
+      "manual"
+    ],
+    "evidence": [
+      "splunk_mcp",
+      "prometheus_mcp",
+      "readonly_kubernetes_api"
+    ],
+    "mode": "diagnosis_and_recommendations_only",
+    "use_case_count": 15,
+    "memory": "postgres_sql_first_pgvector_later",
+    "first_vertical_slice": "01-pdb-eviction-blocked"
+  },
+  "use_cases": [
+    {
+      "id": "01-pdb-eviction-blocked",
+      "files": [
+        "use-cases/01-pdb-eviction-blocked/SPEC.md",
+        "use-cases/01-pdb-eviction-blocked/design.md",
+        "use-cases/01-pdb-eviction-blocked/plan.md",
+        "use-cases/01-pdb-eviction-blocked/skill.md"
+      ]
+    },
+    {
+      "id": "02-webhook-admission-failure",
+      "files": [
+        "use-cases/02-webhook-admission-failure/SPEC.md",
+        "use-cases/02-webhook-admission-failure/design.md",
+        "use-cases/02-webhook-admission-failure/plan.md",
+        "use-cases/02-webhook-admission-failure/skill.md"
+      ]
+    },
+    {
+      "id": "03-pod-termination-finalizer",
+      "files": [
+        "use-cases/03-pod-termination-finalizer/SPEC.md",
+        "use-cases/03-pod-termination-finalizer/design.md",
+        "use-cases/03-pod-termination-finalizer/plan.md",
+        "use-cases/03-pod-termination-finalizer/skill.md"
+      ]
+    },
+    {
+      "id": "04-storage-unmount-detach",
+      "files": [
+        "use-cases/04-storage-unmount-detach/SPEC.md",
+        "use-cases/04-storage-unmount-detach/design.md",
+        "use-cases/04-storage-unmount-detach/plan.md",
+        "use-cases/04-storage-unmount-detach/skill.md"
+      ]
+    },
+    {
+      "id": "05-ocv-vm-not-migratable",
+      "files": [
+        "use-cases/05-ocv-vm-not-migratable/SPEC.md",
+        "use-cases/05-ocv-vm-not-migratable/design.md",
+        "use-cases/05-ocv-vm-not-migratable/plan.md",
+        "use-cases/05-ocv-vm-not-migratable/skill.md"
+      ]
+    },
+    {
+      "id": "06-ocv-stale-virt-launcher",
+      "files": [
+        "use-cases/06-ocv-stale-virt-launcher/SPEC.md",
+        "use-cases/06-ocv-stale-virt-launcher/design.md",
+        "use-cases/06-ocv-stale-virt-launcher/plan.md",
+        "use-cases/06-ocv-stale-virt-launcher/skill.md"
+      ]
+    },
+    {
+      "id": "07-reschedule-capacity-affinity",
+      "files": [
+        "use-cases/07-reschedule-capacity-affinity/SPEC.md",
+        "use-cases/07-reschedule-capacity-affinity/design.md",
+        "use-cases/07-reschedule-capacity-affinity/plan.md",
+        "use-cases/07-reschedule-capacity-affinity/skill.md"
+      ]
+    },
+    {
+      "id": "08-node-kubelet-crio-unreachable",
+      "files": [
+        "use-cases/08-node-kubelet-crio-unreachable/SPEC.md",
+        "use-cases/08-node-kubelet-crio-unreachable/design.md",
+        "use-cases/08-node-kubelet-crio-unreachable/plan.md",
+        "use-cases/08-node-kubelet-crio-unreachable/skill.md"
+      ]
+    },
+    {
+      "id": "09-api-etcd-latency",
+      "files": [
+        "use-cases/09-api-etcd-latency/SPEC.md",
+        "use-cases/09-api-etcd-latency/design.md",
+        "use-cases/09-api-etcd-latency/plan.md",
+        "use-cases/09-api-etcd-latency/skill.md"
+      ]
+    },
+    {
+      "id": "10-mcp-paused-or-coordination",
+      "files": [
+        "use-cases/10-mcp-paused-or-coordination/SPEC.md",
+        "use-cases/10-mcp-paused-or-coordination/design.md",
+        "use-cases/10-mcp-paused-or-coordination/plan.md",
+        "use-cases/10-mcp-paused-or-coordination/skill.md"
+      ]
+    },
+    {
+      "id": "11-config-drift-mcd-degraded",
+      "files": [
+        "use-cases/11-config-drift-mcd-degraded/SPEC.md",
+        "use-cases/11-config-drift-mcd-degraded/design.md",
+        "use-cases/11-config-drift-mcd-degraded/plan.md",
+        "use-cases/11-config-drift-mcd-degraded/skill.md"
+      ]
+    },
+    {
+      "id": "12-mcd-config-render-apply",
+      "files": [
+        "use-cases/12-mcd-config-render-apply/SPEC.md",
+        "use-cases/12-mcd-config-render-apply/design.md",
+        "use-cases/12-mcd-config-render-apply/plan.md",
+        "use-cases/12-mcd-config-render-apply/skill.md"
+      ]
+    },
+    {
+      "id": "13-os-pivot-reboot-failure",
+      "files": [
+        "use-cases/13-os-pivot-reboot-failure/SPEC.md",
+        "use-cases/13-os-pivot-reboot-failure/design.md",
+        "use-cases/13-os-pivot-reboot-failure/plan.md",
+        "use-cases/13-os-pivot-reboot-failure/skill.md"
+      ]
+    },
+    {
+      "id": "14-uncordon-or-drainer-annotation",
+      "files": [
+        "use-cases/14-uncordon-or-drainer-annotation/SPEC.md",
+        "use-cases/14-uncordon-or-drainer-annotation/design.md",
+        "use-cases/14-uncordon-or-drainer-annotation/plan.md",
+        "use-cases/14-uncordon-or-drainer-annotation/skill.md"
+      ]
+    },
+    {
+      "id": "15-disk-pressure-host-resource",
+      "files": [
+        "use-cases/15-disk-pressure-host-resource/SPEC.md",
+        "use-cases/15-disk-pressure-host-resource/design.md",
+        "use-cases/15-disk-pressure-host-resource/plan.md",
+        "use-cases/15-disk-pressure-host-resource/skill.md"
+      ]
+    }
+  ],
+  "shared_files": [
+    "README.md",
+    "SOURCE_REVIEW.md",
+    "architecture/LANGGRAPH_DESIGN.md",
+    "contracts/TOOL_CONTRACTS.md",
+    "db/README.md",
+    "db/migrations/001_initial.sql",
+    "manifest.json",
+    "tests/TEST_STRATEGY.md",
+    "tests/fixtures/pdb-blocked.json"
+  ]
+}

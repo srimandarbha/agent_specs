@@ -1,0 +1,18 @@
+{
+  "scenario": "pdb-blocked",
+  "cluster_id": "cluster-test-01",
+  "openshift_version": "4.22.x",
+  "node_name": "worker-a",
+  "namespace": "payments",
+  "pod": "payments-api-abc",
+  "pdb": {
+    "name": "payments-api-pdb",
+    "disruptionsAllowed": 0,
+    "currentHealthy": 2,
+    "desiredHealthy": 2
+  },
+  "matching_pod": true,
+  "eviction_failure_observed": true,
+  "expected": "supported",
+  "note": "Synthetic fixture; values are illustrative, not a production query result."
+}
