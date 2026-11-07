@@ -1,123 +1,165 @@
-# Intent: Multi-Cluster Object Observability via RHACM for MCO Drain Troubleshooting
+# Intent: Multi-Index Splunk Observability Architecture for MCO Drain Troubleshooting
 
 **Status:** Approved Architectural Direction  
 **Author:** SRE Automation & Platform Diagnostics Team  
 **Scope:** 150+ OpenShift Clusters across 3 Datacenters (DCs)  
-**Target Consumer:** SRE Diagnostic Agent (LangGraph) & Red Hat Platform Engineering Team  
+**Target Consumer:** SRE Diagnostic Agent (LangGraph), Splunk Administrators, and Platform Engineering  
 
 ---
 
 ## 1. Problem Statement & Context
 
-The SRE team is implementing an automated diagnostic system to triage and resolve **Machine Config Operator (MCO) drain stalls and MachineConfigPool (MCP) update failures** across a fleet of 150+ OpenShift clusters located across 3 physical/cloud datacenters.
+The SRE team is implementing an automated diagnostic system to triage and resolve **Machine Config Operator (MCO) drain stalls and MachineConfigPool (MCP) update failures** across a fleet of 150+ OpenShift clusters located in 3 physical/cloud datacenters.
 
-Accurate diagnosis of MCO drain failures (such as `01-pdb-eviction-blocked`, `03-pod-termination-finalizer`, and `04-storage-unmount-detach`) requires visibility into Kubernetes object states—specifically:
-* PodDisruptionBudgets (PDB selectors, `currentHealthy`, `desiredHealthy`, `disruptionsAllowed`)
-* Pods (readiness conditions, restart counts, finalizers, deletion timestamps)
-* Nodes (readiness, taints, cordon state, MCO drain annotations)
-* MachineConfigPools and MachineConfigs (rollout progress, paused state, degraded conditions)
-* VolumeAttachments and PersistentVolumeClaims
+Diagnosing MCO drain stalls (such as `01-pdb-eviction-blocked`, `03-pod-termination-finalizer`, and `04-storage-unmount-detach`) requires correlating three distinct types of telemetry:
+1. **Container Logs:** Controller error messages (e.g. MCC eviction denials, Kubelet teardown timeouts).
+2. **Kubernetes Object State:** Ground-truth resource configurations and conditions (e.g. PDB selectors, `disruptionsAllowed`, pod finalizers, node drain annotations).
+3. **Metrics:** Historical time series (e.g. node pressure, container crash counts, replica availability).
 
----
-
-## 2. The Anti-Pattern: Why OTel `k8sobjects` to Splunk is Rejected
-
-The initial design considered deploying an OpenTelemetry collector with `k8sobjectsreceiver` on all 150 clusters, streaming object snapshots via Kafka into Splunk. This approach is explicitly **rejected** due to:
-
-1. **Collector Instability & OOMKills:** The `k8sobjectsreceiver` maintains internal in-memory informers/caches. In large clusters, this results in high memory consumption and frequent OOMKills (Exit Code 137).
-2. **Control-Plane Starvation:** Continuously watching and polling object states across 150 clusters creates unnecessary load on `kube-apiserver` and `etcd`.
-3. **Telemetry Ingestion Lag:** The `OTel -> Kafka -> Splunk` indexing pipeline introduces 1 to 5 minutes of latency. By the time an object snapshot is searchable in Splunk, fast diagnostic timeouts (90s) have expired.
-4. **Massive Licensing Waste:** Streaming full JSON specs for thousands of ephemeral pods 24/7 to Splunk incurs heavy indexing license costs for data that is only examined during rare drain alerts.
+Enterprise access constraints prohibit direct API access or external multi-cluster management proxies. Therefore, **Splunk is the authoritative, centralized observability backend** for logs, normalized K8s object snapshots, and metrics.
 
 ---
 
-## 3. Core Architectural Intent: Pull-on-Demand via RHACM
+## 2. Telemetry Sources in Splunk
 
-Instead of a **continuous 24/7 push** to Splunk, the system will use a **pull-on-demand query model** leveraging the **Red Hat Advanced Cluster Management (RHACM)** Hubs already deployed in each of the 3 datacenters.
+The agent queries a unified Splunk instance storing telemetry partitioned across dedicated indices:
+
+| Index Name (or alias) | Telemetry Ingested | Primary Diagnostic Purpose |
+|---|---|---|
+| **`ocp_logs`** | Container, operator, and journald logs | MCC eviction denial lines, Kubelet unmount logs, CRI-O errors, webhook admission logs. |
+| **`k8s_objects`** | Normalized JSON snapshots & Events | Live and historical state of Pods, PDBs, Nodes, VolumeAttachments, and MCPs. |
+| **`ocp_metrics`** | Ingested Prometheus metric series | Time-series metrics (`kube_pod_disruption_budget_*`, `kube_node_status_condition`, etc.). |
+
+---
+
+## 3. Core Architectural Intent: Unified Multi-Index SPL Query
+
+To prevent slow, sequential round-trips that breach the 90-second LangGraph investigation deadline, the agent will **NOT** issue separate queries for logs, objects, and metrics.
+
+Instead, the system utilizes a **Single-Query Multi-Index Pattern** across a 1-hour time window (`earliest=-1h latest=now`). This executes in a single map-reduce pass across the Splunk indexers, returning a fully correlated diagnostic dossier in **under 10 seconds**.
 
 ```
-                           ┌────────────────────────┐
-                           │   LangGraph SRE Agent  │
-                           └───────────┬────────────┘
-                                       │
-            ┌──────────────────────────┼──────────────────────────┐
-      HTTPS │ (Search API / GraphQL)   │                    HTTPS │
-      mTLS  │                          │                          │
-            ▼                          ▼                          ▼
- ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
- │   RHACM Hub - DC 1   │   │   RHACM Hub - DC 2   │   │   RHACM Hub - DC 3   │
- │   (Local PostgreSQL) │   │   (Local PostgreSQL) │   │   (Local PostgreSQL) │
- └──────────┬───────────┘   └──────────┬───────────┘   └──────────┬───────────┘
-            │ Existing                 │ Existing                 │ Existing
-            │ Klusterlet Tunnels       │ Klusterlet Tunnels       │ Klusterlet Tunnels
-     ┌──────┴──────┐            ┌──────┴──────┐            ┌──────┴──────┐
-     ▼      ▼      ▼            ▼      ▼      ▼            ▼      ▼      ▼
-   [C-1]  [C-2]..[C-50]       [C-51] [C-52]..[C-100]    [C-101] [C-102]..[C-150]
+                        ┌────────────────────────┐
+                        │   LangGraph SRE Agent  │
+                        └───────────┬────────────┘
+                                    │
+                         ONE Single SPL API Call
+                         (Multi-Index: earliest=-1h)
+                                    │
+                                    ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                 Splunk Search Head                     │
+       └───────┬────────────────────┬───────────────────┬───────┘
+               │                    │                   │
+               ▼                    ▼                   ▼
+      ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+      │ index=ocp_logs  │  │ index=k8s_obj   │  │ index=ocp_met   │
+      │ (MCC Evictions) │  │ (Pod, PDB, Node)│  │ (Prometheus TS) │
+      └─────────────────┘  └─────────────────┘  └─────────────────┘
+               │                    │                   │
+               └────────────────────┼───────────────────┘
+                                    │
+                                    ▼
+                        Correlated Diagnostic Dossier
+                        (Returned in 1 Round-Trip)
 ```
 
-### 3.1 Primary Query Path: RHACM Search API (v2)
-* **Mechanism:** Spoke cluster Klusterlets already index object metadata into the local RHACM PostgreSQL database on the Hub.
-* **Latency:** < 20 ms per query.
-* **Impact on Spoke Clusters:** **Zero.** Spoke cluster API servers and `etcd` are never contacted during an investigation.
-* **Use Case:** Answering "What is the PDB status for this pod?", "Which replicas are failing?", "Is the node cordoned?".
+### 3.1 Standardized Multi-Index SPL Template
+```spl
+(
+  (index=ocp_logs cluster_id="$cluster_id$" ("machine-config-controller" OR "kubelet") ("Cannot evict" OR "disruption budget" OR "error when waiting for pod" OR "failed calling webhook" OR "drain"))
+  OR
+  (index=k8s_objects cluster_id="$cluster_id$" record_type IN ("snapshot", "change", "event") resource_kind IN ("Pod", "PodDisruptionBudget", "Node", "VolumeAttachment", "MachineConfigPool"))
+  OR
+  (index=ocp_metrics cluster_id="$cluster_id$" metric_name IN ("kube_pod_disruption_budget_status_pod_disruptions_allowed", "mco_machine_config_pool_degraded", "kube_node_status_condition"))
+)
+earliest=-1h latest=now
 
-### 3.2 Secondary Query Path: `ManagedClusterView` (Live State Fallback)
-* **Mechanism:** When real-time live verification from the spoke cluster's `kube-apiserver` is required (e.g., live Node Lease or raw MCO annotation checks), the agent submits a `ManagedClusterView` request to the Hub cluster.
-* **Transport:** Routed securely over the pre-existing Klusterlet reverse tunnel. No direct spoke cluster ingress required.
+| eval source_category = case(
+    index=="ocp_logs", "LOG_ERROR",
+    index=="k8s_objects", "K8S_OBJECT",
+    index=="ocp_metrics", "METRIC",
+    true(), "OTHER"
+  )
+
+| spath input=fields output=pdb_disruptions_allowed path=disruptionsAllowed
+| spath input=fields output=pdb_min_available path=minAvailable
+| spath input=fields output=pod_finalizers path=finalizers{}
+| spath input=fields output=pod_deletion_ts path=deletionTimestamp
+| spath input=fields output=node_desired_drain path=annotations."machineconfiguration.openshift.io/desiredDrain"
+| spath input=fields output=node_last_applied_drain path=annotations."machineconfiguration.openshift.io/lastAppliedDrain"
+| spath input=fields output=storage_detach_error path=detachError
+
+| rex field=_raw "Cannot evict pod \"(?<failing_namespace>[^\/]+)\/(?<failing_pod>[^\"]+)\": (?<eviction_error>.*)"
+| rex field=_raw "error when waiting for pod \"(?<failing_namespace>[^\/]+)\/(?<failing_pod>[^\"]+)\" to terminate"
+
+| eval target_namespace = coalesce(failing_namespace, namespace, "cluster-wide")
+| eval target_resource = coalesce(failing_pod, name, resource_ref, "node-level")
+
+| stats 
+    earliest(_time) as first_seen
+    latest(_time) as last_seen
+    values(eviction_error) as controller_eviction_errors
+    values(source_category) as categories_found
+    values(resource_kind) as objects_observed
+    values(pdb_disruptions_allowed) as pdb_disruptions_allowed
+    values(pdb_min_available) as pdb_min_available
+    values(pod_finalizers) as active_finalizers
+    values(pod_deletion_ts) as deletion_timestamp
+    values(storage_detach_error) as storage_errors
+    values(node_desired_drain) as desired_drain_annotation
+    values(node_last_applied_drain) as last_applied_drain_annotation
+    values(eval(if(source_category=="METRIC", metric_name . "=" . _value, null()))) as relevant_metrics
+    by cluster_id, target_namespace, target_resource
+| sort - last_seen
+```
 
 ---
 
-## 4. Security & Safety Requirements
+## 4. Kubernetes Object Data Minimization (The "Golden Six")
 
-### 4.1 Strictly Read-Only (Defense in Depth)
-* **Zero Secret Access:** Explicitly omit `secrets` and `configmaps` from all RBAC rules.
-* **Zero Mutation:** Strictly no `create`, `update`, `patch`, or `delete` verbs (except creating transient query objects on the Hub).
-* **Zero Pod Interaction:** Block `exec`, `attach`, and `portforward`.
+To prevent memory bloat in collectors and excessive ingest licensing costs in Splunk, object collection in `index=k8s_objects` is strictly limited to **6 essential objects**:
 
-### 4.2 Multi-Tier Rate Limiting
-To ensure that an automated diagnostic loop can never degrade RHACM Hubs or spoke clusters:
+1. **`Pod`** (`core/v1`): Captures `finalizers`, `labels` (for selector resolution), and `deletionTimestamp`.
+2. **`PodDisruptionBudget`** (`policy/v1`): Captures `spec.selector` and `disruptionsAllowed`.
+3. **`Node`** (`core/v1`): Captures `metadata.annotations` (`desiredDrain`, `lastAppliedDrain`) and `spec.unschedulable`.
+4. **`VolumeAttachment`** (`storage.k8s.io/v1`): Captures `status.attachError` and `status.detachError`.
+5. **`MachineConfigPool`** (`machineconfiguration.openshift.io/v1`): Captures rollout state, machine counts, and paused flags.
+6. **`Event`** (`core/v1`): Chronological timeline of eviction and scheduling failures.
 
-1. **Ingress / Route Layer:** A dedicated OpenShift Route (`search-api-agent`) with HAProxy annotations:
-   * `haproxy.router.openshift.io/rate-limit-connections.rate-http: "10"` (max 10 req/s).
-   * `haproxy.router.openshift.io/rate-limit-connections.concurrent-tcp: "5"`.
-2. **Kube-APIServer Layer (APF):** OpenShift API Priority and Fairness configuration on the Hub:
-   * `PriorityLevelConfiguration` limits agent concurrency to 2 shares.
-   * Excess calls are rejected immediately with `HTTP 429 Too Many Requests`.
-3. **Agent Client Layer:** Token bucket limiter inside the LangGraph agent client throttles outbound requests to 5 req/s with exponential backoff and jitter.
-
-### 4.3 Network & Firewall Isolation
-* The agent connects **only to the 3 RHACM Hub endpoints** over port `8443` / `443` using TLS 1.3 and mTLS.
-* **Zero new firewall rules** are needed between the agent and the 150 spoke clusters.
+### Explicitly Excluded Objects:
+* ❌ **Secrets and ConfigMaps:** Zero secret ingestion or credential capture.
+* ❌ **DaemonSets:** MCO drain helper ignores DaemonSets by design (`--ignore-daemonsets=true`).
+* ❌ **OpenShift Virtualization spec objects (`VM`, `DataVolume`, `VMIM`):** OCV failures are captured via `virt-launcher-eviction-interceptor` logs and Prometheus metrics.
+* ❌ **Services / EndpointSlices:** Webhook reachability errors are logged directly in API server logs.
 
 ---
 
-## 5. Division of Responsibilities
+## 5. Security & Rate-Limiting Guardrails
 
-### Platform / Red Hat Administration Team:
-1. Create a dedicated `ServiceAccount` (`sre-diagnostic-reader`) in namespace `open-cluster-management` on each of the 3 RHACM Hubs.
-2. Bind the ServiceAccount to a read-only `ClusterRole` restricted to:
-   * `search.open-cluster-management.io` (`searches`)
-   * `view.open-cluster-management.io` (`managedclusterviews`)
-3. Expose the rate-limited Route `search-api-agent` on each Hub.
-4. Issue a long-lived ServiceAccount token (or OIDC integration) for the agent.
+1. **Read-Only Splunk Access:** The agent’s Splunk service account is granted read-only search permissions restricted to the approved indices (`ocp_logs`, `k8s_objects`, `ocp_metrics`).
+2. **Strict Time Bounds:** All queries enforce `earliest=-1h latest=now` to prevent costly full-historical scans.
+3. **Investigation Call Budget:** The LangGraph agent is hard-capped at **1 primary multi-index query** per investigation, with a maximum of 1 optional follow-up query if disambiguation is required.
+4. **No Mutation Capabilities:** The agent has zero Kubernetes write permissions, no cluster tokens, and no remediation execution tools.
+
+---
+
+## 6. Division of Responsibilities
+
+### Splunk & Platform Administration Team:
+1. Provide index names and verify retention policies for `ocp_logs`, `k8s_objects`, and `ocp_metrics`.
+2. Provision a read-only Splunk REST API role/token scoped to search these indices.
+3. Validate that field extractions (`spath`) are performant on the search head cluster.
 
 ### SRE Diagnostic Team:
-1. Implement the Python RHACM Client with client-side rate limiting and 429 backoff.
-2. Integrate the RHACM client as a tool node (`query_rhacm_search`) in the LangGraph workflow.
-3. Update the diagnostic skills (e.g., `01-pdb-eviction-blocked`) to query RHACM GraphQL instead of raw `oc` CLI commands or Splunk object logs.
-4. Enforce an investigation budget (max 5 queries per alert investigation).
-
----
-
-## 6. Non-Goals
-* **No Autonomous Remediation:** The system produces root-cause diagnoses and actionable recommendations; it does not execute node uncordons, pod deletions, or PDB patches.
-* **No Fleet-Wide Log Aggregation in RHACM:** Splunk remains the system of record for container logs, operator logs, and journald traces. RHACM is used exclusively for object state and metadata.
-* **No Direct Spoke Cluster Credentials:** The agent will not hold direct kubeconfig files or tokens for any of the 150 spoke clusters.
+1. Implement the unified multi-index SPL query in the LangGraph tool adapter (`query_splunk_unified_dossier`).
+2. Update scenario diagnostic logic (e.g. `01-pdb-eviction-blocked`) to evaluate the aggregated dossier in a single step.
+3. Implement local caching and rate-limiting inside the agent to prevent duplicate searches for concurrent alerts.
 
 ---
 
 ## 7. Success & Acceptance Criteria
-* [ ] Agent can query PDB and Pod state on any spoke cluster via the local RHACM Hub in < 50ms.
-* [ ] Ingestion of K8s objects into OTel / Kafka / Splunk is completely disabled, saving compute and license costs.
-* [ ] Attempts by the agent to access secrets or perform write operations return `HTTP 403 Forbidden` / `405 Method Not Allowed`.
-* [ ] Burst traffic beyond 10 req/s receives a clean `HTTP 429 Too Many Requests` without destabilizing the RHACM Hub.
+* [ ] Agent completes full log, object, and metric correlation in a **single round-trip call to Splunk**.
+* [ ] Query execution time in Splunk completes in **< 15 seconds** for a 1-hour window.
+* [ ] PDB-blocked drain stalls are diagnosed with confirmed root cause (identifying both the PDB and the failing pod/replicas) from the single returned dossier.
+* [ ] Zero Secret, ConfigMap, or credential payloads are ingested or parsed in Splunk.
