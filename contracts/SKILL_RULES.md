@@ -28,7 +28,7 @@ trigger_signatures:
     source: "mcc_logs"
   - pattern: "(?i)eviction.*429.*too many requests"
     source: "mcc_logs"
-  - pattern: "(?i)cannot evict pod: multiple overlapping poddisruptionbudgets"
+  - pattern: "(?i)this pod has more than one poddisruptionbudget"
     source: "mcc_logs"
 supported_environments:
   openshift_versions: ["4.12+", "4.16+", "4.22+", "5.0"]
@@ -45,7 +45,7 @@ required_evidence:
     max_age_seconds: 300
   - dataset: "ocp_metrics"
     metrics:
-      - "kube_pod_disruption_budget_status_pod_disruptions_allowed"
+      - "kube_poddisruptionbudget_status_pod_disruptions_allowed"
       - "kube_pod_status_phase"
     max_age_seconds: 300
 prohibited_actions:
@@ -204,7 +204,7 @@ Before any skill is transitioned to `status: active` or trusted for production r
 ### Documented Draft Slips
 1. **UC01 (PDB Eviction Blocked)**:
    - *Draft claim:* "Kubernetes prohibits overlapping PDBs."
-   - *Technical reality:* Kubernetes allows multiple PDBs to select the same pod. However, eviction then fails with an HTTP 500 internal server error (`Cannot evict pod: multiple overlapping PodDisruptionBudgets found`), so the eviction 429 trigger does not fire. The trigger gate must accept both 429 and 500 eviction failure strings.
+   - *Technical reality:* Kubernetes allows multiple PDBs to select the same pod. However, eviction then fails with an HTTP 500 internal server error (reported text: "This pod has more than one PodDisruptionBudget, which the eviction subresource does not support"; verify on the target version), so the eviction 429 trigger does not fire. The trigger gate must accept both 429 and 500 eviction failure strings.
    - *Branch 3A claim:* Counts `ContainerCreating` as a crash.
    - *Technical reality:* `ContainerCreating` is a normal transient pod creation state. It only indicates failure if stuck beyond probe/creation timeouts with accompanying warning events (e.g. `FailedCreatePodSandBox`).
 2. **UC03 (Pod Termination Finalizer)**:
@@ -213,3 +213,18 @@ Before any skill is transitioned to `status: active` or trusted for production r
 
 ### Expert Gate Requirement
 The coding model must not silently invent fixes in `skill.md`. Instead, technical errors are documented in this spec, captured in negative evaluation fixtures, and corrected via domain-expert review PRs.
+
+---
+
+## 6. Implemented Profile v1 (status: 2026-11-08)
+
+The sections above are the target design. Profile v1 is what the code implements today, in `agent/skills/`. Anything not listed here is not supported and must not be used.
+
+- **Front matter** is parsed with `extra="forbid"`. Unknown keys fail the load.
+- **`trigger_signatures[].signal`** is an added optional field: `denial` (an eviction refusal) or `multi_pdb` (the multiple-PDB refusal). It defaults to `denial`.
+- **`declared_facts`** is the list of named facts the rules may reference. It must equal the set computed by `agent/skills/facts_uc01.py`.
+- **`freshness_limits_seconds`** must define `pdb_pod_snapshot`.
+- **Rules** are `{id, when, then, why}`. `when` is `all`, `any` or `always`, over `[fact, op, value?]` triples. Supported operators are listed in section 3.1. `then` holds `classification`, `confidence`, `sub_branch`, `reason_code` and `remediation` (`kind`, `playbook_id`, `extra_vars_fact`, `blockers_fact`).
+- **Not implemented:** `ref` comparisons, template arithmetic in `extra_vars_template`, `regex` and `contains` predicates, and `entry_gate` and `integrity_gate` node types. Entry and integrity gates are enforced by the graph harness in Phase 3, not inside skills.
+- **Static validation** (`validate_skill`) rejects: unknown facts or operators, unregistered reason codes, a reason code whose classification does not match the registry, a `supported` rule with a reason code, a non-`supported` rule without one, remediation on a non-`supported` rule, a playbook missing from the catalog or from `remediation_catalog_refs`, trigger patterns that do not compile, and missing fixture paths.
+- **Reason codes** are checked against `contracts/reason_codes.json`, which `tools/build_reason_registry.py` generates from `REASON_CODES.md` section 3.

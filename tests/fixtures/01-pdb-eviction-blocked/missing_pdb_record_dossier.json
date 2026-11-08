@@ -36,7 +36,11 @@
         "kind": "Deployment",
         "name": "payments-api",
         "desired_replicas": 2,
-        "ready_replicas": 2
+        "ready_replicas": 2,
+        "hpa_present": false,
+        "gitops_managed": false,
+        "has_volume_claim_templates": false,
+        "quota_blocks_scale_up": false
       },
       "sibling_pods": [
         {

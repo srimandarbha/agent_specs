@@ -103,7 +103,7 @@
         "has_buffer": true
       },
       "relevant_metrics": [
-        "kube_pod_disruption_budget_status_pod_disruptions_allowed{namespace=\"payments\",poddisruptionbudget=\"payments-api-pdb\"}=0",
+        "kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace=\"payments\",poddisruptionbudget=\"payments-api-pdb\"}=0",
         "kube_deployment_status_replicas_available{namespace=\"payments\",deployment=\"payments-api\"}=2"
       ]
     }

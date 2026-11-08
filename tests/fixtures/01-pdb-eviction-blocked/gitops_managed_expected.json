@@ -1,0 +1,11 @@
+{
+  "classification": "supported",
+  "confidence": "medium",
+  "sub_branch": "3B_multi_replica_at_min_available",
+  "stop_reason": null,
+  "remediation_kind": "manual_cli",
+  "playbook_id": null,
+  "blockers": [
+    "gitops_managed"
+  ]
+}

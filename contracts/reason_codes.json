@@ -1,0 +1,602 @@
+{
+  "schema_version": "1.0",
+  "source": "contracts/REASON_CODES.md section 3",
+  "codes": [
+    {
+      "code": "all_nodes_cordoned_cluster_wide_maintenance",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "All schedulable nodes are cordoned; cluster-wide outage or maintenance.",
+      "applicable_use_cases": [
+        "UC07"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "cluster_wide_apiserver_degradation_detected",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Latency spike affects all API instances; systemic control plane issue.",
+      "applicable_use_cases": [
+        "UC09"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "contradictory_telemetry",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Conflicting signals (e.g. eviction 429 logged but `disruptionsAllowed > 0`).",
+      "applicable_use_cases": [
+        "UC01",
+        "UC02",
+        "UC06",
+        "UC11",
+        "UC16"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "control_plane_latency_within_thresholds",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "API server and etcd p99 latency < 500ms; no degradation.",
+      "applicable_use_cases": [
+        "UC09"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "drain_in_progress_route_to_workload_skill",
+      "classification": "supported",
+      "remediation": "none` (Handoff)",
+      "description": "Node drain is blocked by workload pod; route to UC01, UC03, or UC04.",
+      "applicable_use_cases": [
+        "UC14"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "drift_target_unidentified",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "MCD reports drift but specific corrupted file/unit not reported.",
+      "applicable_use_cases": [
+        "UC11"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "hardware_storage_controller_fault_requires_node_reprovisioning",
+      "classification": "supported",
+      "remediation": "none` (Handoff)",
+      "description": "Kernel reports hardware I/O lockup; node reprovisioning required.",
+      "applicable_use_cases": [
+        "UC04"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "host_reboot_in_progress_within_grace_window",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Node currently rebooting within expected 15-minute maintenance window.",
+      "applicable_use_cases": [
+        "UC13"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "invalid_cluster_context",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Target `cluster_id` is unknown, unauthorized, or missing from cluster registry.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    },
+    {
+      "code": "lifecycle_stage_not_apply",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "MCD is not in config apply stage.",
+      "applicable_use_cases": [
+        "UC11",
+        "UC12"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_degraded",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "MachineConfigPool is not reporting Degraded condition.",
+      "applicable_use_cases": [
+        "UC10",
+        "UC11"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_drain",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Node is not cordoned or MCO is not in drain phase.",
+      "applicable_use_cases": [
+        "UC01",
+        "UC03",
+        "UC04",
+        "UC06",
+        "UC07",
+        "UC16"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_drain_or_migration",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Node is neither draining nor hosting migrating VirtualMachineInstances.",
+      "applicable_use_cases": [
+        "UC05"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_node_maintenance",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Target node is not marked for drain or maintenance.",
+      "applicable_use_cases": [
+        "UC14",
+        "UC15"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_pivot_reboot",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Node is not in OS pivot or rebooting stage.",
+      "applicable_use_cases": [
+        "UC13"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "lifecycle_stage_not_updating",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "MachineConfigPool is not in updating phase.",
+      "applicable_use_cases": [
+        "UC10",
+        "UC12"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "mcp_record_missing",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "MachineConfigPool resource missing from inventory cache.",
+      "applicable_use_cases": [
+        "UC10"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "multi_owner_finalizers_detected",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Pod contains multiple third-party finalizers requiring separate manual triage.",
+      "applicable_use_cases": [
+        "UC03"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "multiple_overlapping_pdbs_detected",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Pod labels match >=2 overlapping PDBs. Eviction returns HTTP 500.",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_branch_matched",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Fallback when evidence matches entry gate but no specific sub-branch triggers.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    },
+    {
+      "code": "no_drain_coordination_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Node drain coordination advancing normally.",
+      "applicable_use_cases": [
+        "UC10"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_evidence",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Adapter returned 0 records for a mandatory target query.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    },
+    {
+      "code": "no_failed_scheduling_events_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Replacement pods scheduled without capacity/affinity errors.",
+      "applicable_use_cases": [
+        "UC07"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_max_volume_count_events_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "AttachVolume limit not exceeded on target node.",
+      "applicable_use_cases": [
+        "UC16"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_mcd_drift_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Machine Config Daemon verifies on-disk state matches rendered MC.",
+      "applicable_use_cases": [
+        "UC11"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_node_resource_pressure_detected",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Disk, memory, and PID pressure conditions are all False.",
+      "applicable_use_cases": [
+        "UC15"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_os_pivot_or_reboot_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "rpm-ostree pivot and systemd reboot completed within SLA.",
+      "applicable_use_cases": [
+        "UC13"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_pdb_eviction_denial_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "No eviction denial matching PDB regex in MCC logs.",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_pod_termination_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Pod terminated cleanly within standard grace period.",
+      "applicable_use_cases": [
+        "UC03"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_render_or_apply_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Ignition/MachineConfig applied without error.",
+      "applicable_use_cases": [
+        "UC12"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_storage_unmount_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Volumes detached cleanly without mount error.",
+      "applicable_use_cases": [
+        "UC04"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_virt_launcher_drain_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "virt-launcher pod evicted without stall.",
+      "applicable_use_cases": [
+        "UC06"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_vmi_migration_block_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "VirtualMachineInstance migration succeeded or was never scheduled.",
+      "applicable_use_cases": [
+        "UC05"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "no_webhook_admission_error_logged",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "No admission webhook timeout or denial in API audit/logs.",
+      "applicable_use_cases": [
+        "UC02"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "node_is_ready_and_responsive",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Kubelet and CRI-O responding to lease/probes; Node Ready=True.",
+      "applicable_use_cases": [
+        "UC08"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "node_network_partitioned_handoff_to_08",
+      "classification": "supported",
+      "remediation": "none` (Handoff)",
+      "description": "Unresponsiveness caused by host network loss; route to UC08.",
+      "applicable_use_cases": [
+        "UC02",
+        "UC03"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "node_record_missing",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Target Node resource missing from inventory cache.",
+      "applicable_use_cases": [
+        "UC11",
+        "UC15"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pdb_deleted_or_selector_mismatch",
+      "classification": "probable",
+      "remediation": "manual_cli",
+      "description": "Eviction failed citing PDB, but 0 PDBs select target pod labels.",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pdb_disruptions_allowed_positive",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "PDB `disruptionsAllowed > 0`; eviction is not blocked by PDB quota.",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pdb_record_missing_from_cache",
+      "classification": "probable",
+      "remediation": "manual_cli",
+      "description": "PDB object not found in telemetry store despite MCC log citation.",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pdb_state_stale",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "PDB/Pod snapshot exceeds active-incident freshness limit (300s).",
+      "applicable_use_cases": [
+        "UC01"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pod_already_terminated",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Target pod no longer exists in etcd / object cache.",
+      "applicable_use_cases": [
+        "UC03"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pod_not_in_terminating_state",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Pod has no `deletionTimestamp`; termination not initiated.",
+      "applicable_use_cases": [
+        "UC03"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pod_scheduled_successfully",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Target pod transitioned from Pending to Running.",
+      "applicable_use_cases": [
+        "UC07"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pool_contains_unready_nodes",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Unready nodes in MCP prevent advancing rollout.",
+      "applicable_use_cases": [
+        "UC10"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pool_is_not_paused",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "MachineConfigPool `spec.paused` is false and no pause annotation exists.",
+      "applicable_use_cases": [
+        "UC10"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "pool_rollout_in_progress_respecting_concurrency_limits",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "MCP rollout progressing within `maxUnavailable` budget.",
+      "applicable_use_cases": [
+        "UC10"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "rendered_config_object_missing",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Desired rendered MachineConfig missing from `k8s_objects`.",
+      "applicable_use_cases": [
+        "UC12"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "stale_telemetry",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Telemetry age exceeds observability matrix freshness limits without recent events.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    },
+    {
+      "code": "telemetry_backend_unavailable",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Splunk or Prometheus MCP query timed out or returned HTTP 5xx after 1 retry.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    },
+    {
+      "code": "transient_network_timeout",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Isolated single network blip without persistent controller degradation.",
+      "applicable_use_cases": [
+        "UC02",
+        "UC05",
+        "UC08",
+        "UC09"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "unsupported_drain_annotation_schema",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Node drain annotation does not conform to MCO JSON format.",
+      "applicable_use_cases": [
+        "UC14"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "virt_launcher_pod_missing",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "virt-launcher pod not located in namespace.",
+      "applicable_use_cases": [
+        "UC06"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "vm_already_stopped",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Target VM is powered down / stopped.",
+      "applicable_use_cases": [
+        "UC05"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "vm_still_homed_on_draining_node",
+      "classification": "supported",
+      "remediation": "none` (Handoff)",
+      "description": "Live migration failed to relocate VMI from draining host.",
+      "applicable_use_cases": [
+        "UC05"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "vmi_migration_incomplete_route_to_05",
+      "classification": "supported",
+      "remediation": "none` (Handoff)",
+      "description": "virt-launcher termination waiting on VMI migration; route to UC05.",
+      "applicable_use_cases": [
+        "UC06"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "volume_attachment_record_missing",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "VolumeAttachment object absent during detach failure diagnosis.",
+      "applicable_use_cases": [
+        "UC04"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "webhook_already_removed",
+      "classification": "not_supported",
+      "remediation": "none",
+      "description": "Failing webhook configuration object has already been deleted.",
+      "applicable_use_cases": [
+        "UC02"
+      ],
+      "scope": "scoped"
+    },
+    {
+      "code": "wrong_cluster_evidence",
+      "classification": "inconclusive",
+      "remediation": "none",
+      "description": "Ingested evidence contains telemetry belonging to a cluster other than the target.",
+      "applicable_use_cases": [],
+      "scope": "global"
+    }
+  ]
+}

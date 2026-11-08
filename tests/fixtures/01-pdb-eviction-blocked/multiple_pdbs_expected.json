@@ -1,0 +1,8 @@
+{
+  "classification": "inconclusive",
+  "confidence": "low",
+  "sub_branch": null,
+  "stop_reason": "multiple_overlapping_pdbs_detected",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

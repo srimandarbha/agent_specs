@@ -53,7 +53,11 @@
         "kind": "StatefulSet",
         "name": "payments-db",
         "desired_replicas": 1,
-        "ready_replicas": 1
+        "ready_replicas": 1,
+        "hpa_present": false,
+        "gitops_managed": false,
+        "has_volume_claim_templates": false,
+        "quota_blocks_scale_up": false
       },
       "sibling_pods": [],
       "capacity_details": {

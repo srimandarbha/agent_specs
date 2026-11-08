@@ -16,7 +16,7 @@
           },
           "query": {
             "type": "string",
-            "description": "Parameterized PromQL expression (e.g. kube_pod_disruption_budget_status_pod_disruptions_allowed{namespace=\"payments\"})"
+            "description": "Parameterized PromQL expression (e.g. kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace=\"payments\"})"
           },
           "time": {
             "type": "string",

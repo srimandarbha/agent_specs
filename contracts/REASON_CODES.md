@@ -129,3 +129,9 @@ if classification in ("inconclusive", "not_supported"):
 if classification == "supported" and confidence == "high":
     assert stop_reason is None, "Supported/high finding cannot carry a stop_reason"
 ```
+
+---
+
+## 5. Machine-readable registry
+
+`contracts/reason_codes.json` is generated from section 3 by `python3 tools/build_reason_registry.py`. Edit this Markdown, then regenerate. Never edit the JSON by hand. `tests/test_reason_registry.py` fails if the two drift apart or if a code is defined twice with different classifications.

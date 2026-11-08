@@ -130,7 +130,7 @@ The agent MUST verify these conditions before activating this skill. If any chec
 ### Step 2: Differentiate Finalizer Block vs. Container Runtime Hang
 1. Inspect `metadata.finalizers` array of the target Pod in `k8s_objects` / KV Store:
    * **Case 2A: `metadata.finalizers` contains entries:**
-     * If any finalizer contains `pvc-protection` or `volume`: proceed to **Branch 3B (Storage Interlock)**.
+     * If the pod's own finalizers contain a storage-related entry, or a PersistentVolumeClaim it uses carries `kubernetes.io/pvc-protection`: proceed to **Branch 3B (Storage Interlock)**.
      * If finalizers are custom operator or system controllers (e.g. `*.openshift.io/*`, `*.k8s.io/*`, or third-party controllers): proceed to **Branch 3A (Stalled Operator Controller)**.
    * **Case 2B: `metadata.finalizers` is empty `[]` or null:**
      * The API server is waiting for Kubelet/CRI-O to confirm all containers have stopped and cgroups have been torn down. Proceed to **Branch 3C (Container Runtime / PreStop Hang)**.
@@ -159,7 +159,7 @@ The agent MUST verify these conditions before activating this skill. If any chec
   * *Remediation Route:* **DO NOT forcefully remove the finalizer autonomously.** Removing finalizers manually risks orphaning external infrastructure or state corruption. Route to **Manual CLI Fallback** with controller diagnostics.
 
 * **Branch 3B: Storage Interlock / PVC Protection Finalizer**
-  * *Evidence:* `metadata.finalizers` contains `kubernetes.io/pvc-protection` AND volume attachment for the pod's persistent volume is still locked or unmounting.
+  * *Evidence:* a PersistentVolumeClaim used by the pod carries `kubernetes.io/pvc-protection` in `metadata.finalizers` (this finalizer is placed on the claim, never on the Pod) AND the attachment for that claim's persistent volume is still locked or unmounting.
   * *Diagnosis:* The pod cannot terminate because storage unmounting is blocked by the CSI subsystem.
   * *Remediation Route:* **Handoff to `use-cases/04-storage-unmount-detach`**. Resolving the VolumeAttachment/CSI daemon issue will clear this finalizer automatically.
 

@@ -17,7 +17,7 @@ The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is cau
 * `index=k8s_objects` / KV Store:
   * `Pod` (`metadata.labels`, `metadata.ownerReferences`, phase, conditions).
   * `PodDisruptionBudget` (`spec.selector`, `spec.minAvailable`, `status.disruptionsAllowed`, `status.currentHealthy`, `status.desiredHealthy`).
-* `index=ocp_metrics`: `kube_pod_disruption_budget_status_pod_disruptions_allowed`, `kube_pod_container_status_waiting_reason`.
+* `index=ocp_metrics`: `kube_poddisruptionbudget_status_pod_disruptions_allowed`, `kube_pod_container_status_waiting_reason`.
 
 ## Diagnostic Strategy
 1. **Perception:** Ingest unified Splunk dossier in a single round-trip.

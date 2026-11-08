@@ -49,8 +49,13 @@ python3 tests/validate_repo_contracts.py
 # 5. Check evaluation fixture inventory completeness
 python3 tests/check_eval_fixtures.py
 
-# 6. Sanity check Python compilation across all modules
-python3 -m compileall schemas contracts tests
+# 6. Verify the reason-code registry and the UC01 skill rules
+python3 tools/build_reason_registry.py --check
+python3 tools/render_skill_rules.py use-cases/01-pdb-eviction-blocked/skill.md --check
+pytest tests/test_reason_registry.py tests/test_uc01_skill.py -q
+
+# 7. Sanity check Python compilation across all modules
+python3 -m compileall schemas contracts tests agent tools
 ```
 
 ---
@@ -128,4 +133,5 @@ Prometheus is a first-class logical adapter. Splunk and Prometheus are equal pee
   - `test_schemas.py`: Schema validation unit suite.
   - `test_mcp_schemas.py`: MCP tool and sample validation suite.
 - `remediations/`: `PLAYBOOK_CATALOG.json` and remediation execution policies.
+- `agent/skills/`: skill loader, constrained rule engine, UC01 fact derivation and the reason-code registry loader. This is the reference implementation of `contracts/SKILL_RULES.md` section 6.
 - `db/migrations/`: PostgreSQL relational audit and state migrations.

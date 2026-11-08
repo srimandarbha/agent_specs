@@ -5,7 +5,7 @@
     "result": [
       {
         "metric": {
-          "__name__": "kube_pod_disruption_budget_status_pod_disruptions_allowed",
+          "__name__": "kube_poddisruptionbudget_status_pod_disruptions_allowed",
           "cluster_id": "ocp-prod-01",
           "namespace": "payments",
           "poddisruptionbudget": "payments-api-pdb",
@@ -18,7 +18,7 @@
       },
       {
         "metric": {
-          "__name__": "kube_pod_disruption_budget_status_expected_pods",
+          "__name__": "kube_poddisruptionbudget_status_expected_pods",
           "cluster_id": "ocp-prod-01",
           "namespace": "payments",
           "poddisruptionbudget": "payments-api-pdb"

@@ -155,7 +155,7 @@ def test_evidence_record_validation():
 
 def test_metric_payload_validation():
     metric = MetricPayload(
-        metric_name="kube_pod_disruption_budget_status_pod_disruptions_allowed",
+        metric_name="kube_poddisruptionbudget_status_pod_disruptions_allowed",
         labels={"namespace": "payments", "poddisruptionbudget": "payments-api-pdb"},
         value=0.0,
         sample_timestamp=datetime.now(timezone.utc),

@@ -1,0 +1,8 @@
+{
+  "classification": "probable",
+  "confidence": "medium",
+  "sub_branch": null,
+  "stop_reason": "pdb_deleted_or_selector_mismatch",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

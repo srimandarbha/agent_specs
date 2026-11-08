@@ -10,8 +10,16 @@
     "requires_human_approval": true,
     "preconditions": [
       "pdb_disruptions_allowed == 0",
-      "workload_kind IN ['Deployment', 'StatefulSet', 'ReplicaSet']",
-      "failing_pod_matches_pdb_selector == true"
+      "pdb_current_healthy == pdb_desired_healthy",
+      "failing_pod_matches_pdb_selector == true",
+      "pdb_selecting_count == 1",
+      "workload_kind IN ['Deployment', 'StatefulSet']",
+      "hpa_present == false",
+      "gitops_managed == false",
+      "has_volume_claim_templates == false",
+      "quota_blocks_scale_up == false",
+      "capacity_insufficient == false",
+      "all_preconditions_known == true (any unknown counts as failed)"
     ],
     "required_extra_vars": [
       "target_cluster",

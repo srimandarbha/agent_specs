@@ -6,7 +6,9 @@ Each skill must declare structured YAML front matter conforming to [`contracts/S
 
 All exit codes, stop reasons, and uncertainty downgrade markers emitted by skills must be registered in [`contracts/REASON_CODES.md`](../contracts/REASON_CODES.md).
 
-## Loading rules\n\nThe YAML front matter is parsed with a safe YAML parser and validated against the schema in `contracts/SKILL_RULES.md`. Unknown keys, duplicate keys, malformed regular expressions, missing mandatory metadata and path escapes are hard validation failures. Metadata is declarative only; it does not grant capabilities.
+## Loading rules
+
+The YAML front matter is parsed with a safe YAML parser and validated against the schema in `contracts/SKILL_RULES.md`. Unknown keys, duplicate keys, malformed regular expressions, missing mandatory metadata and path escapes are hard validation failures. Metadata is declarative only; it does not grant capabilities.
 
 - Skills are loaded only from the repository's allowlisted `use-cases/<id>/skill.md` paths resolved by the manifest; no user-supplied path or dynamic filesystem traversal.
 - Validate skill ID against `manifest.json`, front matter/metadata schema, required sections, version compatibility and catalog references.

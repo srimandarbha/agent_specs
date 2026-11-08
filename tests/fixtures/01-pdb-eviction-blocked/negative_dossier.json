@@ -43,13 +43,17 @@
         "last_applied_drain": "true"
       },
       "relevant_metrics": [
-        "kube_pod_disruption_budget_status_pod_disruptions_allowed{poddisruptionbudget=\"payments-api-pdb\",namespace=\"payments\"}=2"
+        "kube_poddisruptionbudget_status_pod_disruptions_allowed{poddisruptionbudget=\"payments-api-pdb\",namespace=\"payments\"}=2"
       ],
       "workload_details": {
         "kind": "Deployment",
         "name": "payments-api",
         "desired_replicas": 3,
-        "ready_replicas": 3
+        "ready_replicas": 3,
+        "hpa_present": false,
+        "gitops_managed": false,
+        "has_volume_claim_templates": false,
+        "quota_blocks_scale_up": false
       }
     }
   ],

@@ -57,7 +57,7 @@
 ### Required Telemetry Sources (Splunk Only)
 * `index=ocp_logs`: Machine Config Controller eviction logs and Kubelet teardown logs.
 * `index=k8s_objects` / KV Store: `Pod` (labels, finalizers, phase) and `PodDisruptionBudget` (`spec.selector`, `disruptionsAllowed`).
-* `index=ocp_metrics`: `kube_pod_disruption_budget_status_pod_disruptions_allowed`, `kube_pod_container_status_waiting_reason`.
+* `index=ocp_metrics`: `kube_poddisruptionbudget_status_pod_disruptions_allowed`, `kube_pod_container_status_waiting_reason`.
 
 ### Bounded Execution
 * Max 2 Splunk tool calls total per investigation.
