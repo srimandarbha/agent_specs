@@ -1,22 +1,25 @@
 # Test strategy and acceptance gates
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../intent.md), [`LANGGRAPH_DESIGN.md` §11](../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../contracts) and [`OBSERVABILITY_MATRIX.md`](../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Unit tests
 - Lifecycle classifier handles drain, config apply, pivot/reboot, uncordon, MCP rollout, cluster upgrade and unknown.
 - Skill loader rejects path traversal, unknown skill IDs, invalid schema and unsupported version range.
 - Evidence assessor detects stale/future timestamps, wrong cluster, duplicate content hashes, missing event times and contradictions.
 - Diagnosis cites evidence IDs; cannot cite nonexistent IDs or claim certainty when minimum evidence is absent.
-- Retry policy retries only transient errors, at most twice; authorization errors are not retried.
+- Retry policy retries only transient errors, at most once per investigation (DEVELOPMENT_BLUEPRINT §7); authorization errors are not retried.
 - Redaction tests remove tokens, credentials, authorization headers and Secret values.
 
 ## Graph tests
 - Missing cluster -> inconclusive; no tool invocation.
 - Unknown skill -> no unbounded exploration.
-- Unified multi-index Splunk query executes in a single call and finishes within the 15-second budget.
+- Each adapter query (Splunk MCP, Prometheus MCP) respects its per-adapter time bound; a single unified Splunk query is tested only for deployments where all evidence is centralized in Splunk.
 - Playbook Catalog matcher evaluates diagnosed root causes against `remediations/PLAYBOOK_CATALOG.json` and outputs valid `aap_extra_vars`.
 - If no playbook matches or risk is high, matcher generates targeted manual `oc` CLI runbook with rollback instructions.
 - Required evidence missing -> at most two rounds then inconclusive.
 - All evidence sources unavailable -> report tool failures, not “no issue found”.
-- Tool-call (max 2) and deadline (45s) budgets always terminate the graph.
+- Per-adapter call budgets (max 4 external request attempts total, counting retries) and the 45s absolute deadline always terminate the graph.
 - Tool registry containing a mutating operation causes startup/configuration failure.
 
 ## Integration tests (PDB first)

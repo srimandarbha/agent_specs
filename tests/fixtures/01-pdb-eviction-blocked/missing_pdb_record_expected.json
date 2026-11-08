@@ -1,0 +1,8 @@
+{
+  "classification": "probable",
+  "confidence": "medium",
+  "sub_branch": null,
+  "stop_reason": "pdb_record_missing_from_cache",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

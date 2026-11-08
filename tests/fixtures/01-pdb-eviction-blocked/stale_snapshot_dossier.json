@@ -1,0 +1,89 @@
+{
+  "status": "partial",
+  "freshness": "stale",
+  "quality": "valid",
+  "adapter_errors": [],
+  "observed_at": "2026-11-08T09:30:00Z",
+  "execution_time_ms": 3800,
+  "records": [
+    {
+      "cluster_id": "ocp-prod-01",
+      "target_namespace": "payments",
+      "target_resource": "payments-api-7b89-xyz",
+      "node_name": "worker-01.prod.rhocp",
+      "first_seen": "2026-11-08T09:15:00Z",
+      "last_seen": "2026-11-08T09:29:45Z",
+      "controller_eviction_errors": [
+        "Cannot evict pod \"payments/payments-api-7b89-xyz\": Cannot evict pod as it would violate the pod's disruption budget."
+      ],
+      "objects_observed": [
+        "Pod",
+        "PodDisruptionBudget",
+        "Node",
+        "MachineConfigPool"
+      ],
+      "pod_details": {
+        "name": "payments-api-7b89-xyz",
+        "namespace": "payments",
+        "owner_kind": "Deployment",
+        "owner_name": "payments-api",
+        "labels": {
+          "app": "payments-api",
+          "tier": "backend"
+        },
+        "phase": "Running"
+      },
+      "pdb_details": {
+        "name": "payments-api-pdb",
+        "namespace": "payments",
+        "selector": {
+          "matchLabels": {
+            "app": "payments-api"
+          }
+        },
+        "min_available": 2,
+        "max_unavailable": null,
+        "current_healthy": 2,
+        "desired_healthy": 2,
+        "disruptions_allowed": 0,
+        "snapshot_age_s": 5400,
+        "overlapping_pdb_count": 1
+      },
+      "workload_details": {
+        "kind": "Deployment",
+        "name": "payments-api",
+        "desired_replicas": 2,
+        "ready_replicas": 2
+      },
+      "sibling_pods": [
+        {
+          "name": "payments-api-7b89-abc",
+          "phase": "Running",
+          "ready": true,
+          "restart_count": 0,
+          "waiting_reason": null,
+          "scheduler_message": null
+        }
+      ],
+      "capacity_details": {
+        "schedulable_nodes": 5,
+        "free_cpu_m": 6000,
+        "free_mem_mi": 24576,
+        "pod_request_cpu_m": 500,
+        "pod_request_mem_mi": 1024
+      },
+      "node_details": {
+        "name": "worker-01.prod.rhocp",
+        "conditions": {
+          "Ready": "True",
+          "MemoryPressure": "False",
+          "DiskPressure": "False",
+          "PIDPressure": "False"
+        },
+        "desired_drain": "true",
+        "last_applied_drain": "false"
+      },
+      "relevant_metrics": []
+    }
+  ]
+}

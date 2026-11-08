@@ -3,12 +3,12 @@
 **Use Case:** `14-uncordon-or-drainer-annotation`  
 **Version:** 2.0.0  
 **Harness Integration:** `tests/evals/test_tier3_scenarios.py`  
-**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/tests/EVALUATION_FRAMEWORK.md)
+**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](../../tests/EVALUATION_FRAMEWORK.md)
 
 ---
 
 ## 1. Test Objective & Ground Truth
-Evaluate the agent's capability to ingest node drain annotations (`machineconfiguration.openshift.io/desiredDrain` vs `lastAppliedDrain`) and node schedulability state (`spec.unschedulable`), detect when external actors or competing automation uncordoned the node prematurely or an annotation race condition occurred, and output [`playbook_reconcile_drain_annotation`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json#L45-L61) with validated parameters.
+Evaluate the agent's capability to ingest node drain annotations (`machineconfiguration.openshift.io/desiredDrain` vs `lastAppliedDrain`) and node schedulability state (`spec.unschedulable`), detect when external actors or competing automation uncordoned the node prematurely or an annotation race condition occurred, and output [`playbook_reconcile_drain_annotation`](../../remediations/PLAYBOOK_CATALOG.json#L45-L61) with validated parameters.
 
 ---
 

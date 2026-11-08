@@ -1,5 +1,8 @@
 # Skill: Fail-Proof Diagnosis for Admission Webhook Blocks Pod Eviction (`02-webhook-admission-failure`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 **Version:** 2.0.0  
 **Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
 **Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  

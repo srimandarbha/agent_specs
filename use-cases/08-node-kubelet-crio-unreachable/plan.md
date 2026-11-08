@@ -1,5 +1,8 @@
 # Implementation Plan: Node Becomes NotReady or Kubelet/CRI-O Unreachable
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and obtain matching MCO source/runbook revision.
 - [ ] Align trigger signals in Splunk: Node condition `Ready` is `False` or `Unknown`, or MCC reports `error draining node.*node is not ready`.
@@ -21,7 +24,7 @@
   - Is the host experiencing complete power loss, kernel panic, or hypervisor freeze?
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
-- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json):
   - If CRI-O service crash on a live, cordoned host is isolated:
     - Match `playbook_restart_failed_systemd_unit`.
     - Generate `aap_extra_vars`: `{ target_cluster, target_node, systemd_service_name: "crio" }`.

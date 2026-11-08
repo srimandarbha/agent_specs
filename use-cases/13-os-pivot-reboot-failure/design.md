@@ -1,5 +1,8 @@
 # Design: OS Pivot, Reboot or Post-Reboot Verification Failure
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Design Objective
 Diagnose **os pivot, reboot or post-reboot verification fails**, isolate whether the breakdown is a pre-reboot ostree staging failure, a physical/hypervisor reboot hang, or a post-reboot verification rollback, and generate a deterministic manual CLI fallback specification without direct cluster mutation.
 

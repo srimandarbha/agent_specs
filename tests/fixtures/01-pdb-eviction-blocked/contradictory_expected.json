@@ -1,0 +1,8 @@
+{
+  "classification": "inconclusive",
+  "confidence": "low",
+  "sub_branch": null,
+  "stop_reason": "contradictory_telemetry",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

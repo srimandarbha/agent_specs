@@ -1,0 +1,15 @@
+{
+  "status": "error",
+  "freshness": "unknown",
+  "quality": "valid",
+  "observed_at": "2026-11-08T09:30:00Z",
+  "execution_time_ms": 10000,
+  "records": [],
+  "adapter_errors": [
+    {
+      "adapter": "splunk_mcp",
+      "error": "HTTP 503",
+      "retried": true
+    }
+  ]
+}

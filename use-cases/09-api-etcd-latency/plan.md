@@ -1,5 +1,8 @@
 # Implementation Plan: API Server or ETCD Latency Prevents Drain Progress
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and obtain matching MCO source/runbook revision.
 - [ ] Align trigger signals in Splunk: Multiple MCC/MCD logs report `context deadline exceeded` or `etcdserver: request timed out`.
@@ -21,7 +24,7 @@
   - Are admission webhooks injecting latency into eviction requests while etcd disk is fast?
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
-- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json):
   - Autonomous mutation of etcd or master nodes is **strictly prohibited** (`matched: false`).
 - [ ] **Intelligent CLI Fallback:**
   - For disk fsync latency: output master host disk I/O audit runbook.

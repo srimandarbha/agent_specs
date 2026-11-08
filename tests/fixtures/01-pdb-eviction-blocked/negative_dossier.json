@@ -29,8 +29,10 @@
         "namespace": "payments",
         "min_available": 1,
         "current_healthy": 3,
-        "desired_healthy": 3,
-        "disruptions_allowed": 2
+        "desired_healthy": 1,
+        "disruptions_allowed": 2,
+        "snapshot_age_s": 30,
+        "overlapping_pdb_count": 1
       },
       "node_details": {
         "name": "worker-01.prod.rhocp",
@@ -42,7 +44,16 @@
       },
       "relevant_metrics": [
         "kube_pod_disruption_budget_status_pod_disruptions_allowed{poddisruptionbudget=\"payments-api-pdb\",namespace=\"payments\"}=2"
-      ]
+      ],
+      "workload_details": {
+        "kind": "Deployment",
+        "name": "payments-api",
+        "desired_replicas": 3,
+        "ready_replicas": 3
+      }
     }
-  ]
+  ],
+  "freshness": "fresh",
+  "quality": "valid",
+  "adapter_errors": []
 }

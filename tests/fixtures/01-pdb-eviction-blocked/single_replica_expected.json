@@ -1,0 +1,8 @@
+{
+  "classification": "supported",
+  "confidence": "high",
+  "sub_branch": "3C_single_replica",
+  "stop_reason": null,
+  "remediation_kind": "manual_cli",
+  "playbook_id": null
+}

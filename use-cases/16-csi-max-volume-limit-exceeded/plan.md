@@ -1,5 +1,8 @@
 # Implementation Plan: CSI Max Volume Limit Exceeded on Node (`16-csi-max-volume-limit-exceeded`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and CSI driver volume limit specifications (Kubernetes CSINode spec, AWS EBS, MapR, Trident).
 - [ ] Align trigger signals in Splunk: `index=k8s_objects` contains `reason == "FailedScheduling"` matching `(?i)0/\d+ nodes are available: \d+ node\(s\) exceed max volume count`.
@@ -26,7 +29,7 @@
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
 - [ ] **Catalog Matching:**
-  - Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json).
+  - Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json).
   - Storage topology reconfiguration carries high risk of storage detachment across healthy workloads.
   - Set `playbook_match: null`.
 - [ ] **Intelligent Manual CLI Fallback:**

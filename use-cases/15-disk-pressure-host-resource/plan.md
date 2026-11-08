@@ -1,5 +1,8 @@
 # Implementation Plan: Node Disk Pressure or Host Resource Exhaustion (`15-disk-pressure-host-resource`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and Kubelet eviction manager event definitions.
 - [ ] Align trigger signals in Splunk: Node condition `DiskPressure: True` or `PIDPressure: True`, or Kubelet log matches `(?i)(no space left on device|ImageGCFailed|FreeDiskSpaceFailed)`.
@@ -23,7 +26,7 @@
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
 - [ ] **Catalog Matching:**
-  - Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json).
+  - Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json).
   - Autonomous host disk file deletion or process killing is strictly prohibited.
   - Set `playbook_match: null`.
 - [ ] **Intelligent Manual CLI Fallback:**

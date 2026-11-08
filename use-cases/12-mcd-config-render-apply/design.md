@@ -1,5 +1,8 @@
 # Design: Rendered MachineConfig or Configuration Apply Failure
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Design Objective
 Diagnose **rendered machineconfig or configuration application failure**, isolate whether the breakdown is a render-time merge collision between custom MachineConfigs or a node-level file-write/systemd-reload failure in MCD, and generate a deterministic manual CLI fallback specification without direct cluster mutation.
 

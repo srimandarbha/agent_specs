@@ -1,5 +1,8 @@
 # Implementation Plan: Drain Annotation or Uncordon Coordination Mismatch
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and obtain matching MCO source/runbook revision.
 - [ ] Align trigger signals in Splunk: MCC/MCD log contains `uncordon.*during update` or `desiredDrain.*lastAppliedDrain`.
@@ -23,7 +26,7 @@
   - Check whether user pods are still actively running (prohibiting annotation completion).
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
-- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json):
   - If premature uncordon or annotation desync with 0 pods is verified:
     - Match `playbook_reconcile_drain_annotation`.
     - Generate `aap_extra_vars`: `{ target_cluster, draining_node, expected_mco_drain_state, action: "reconcile_and_cordon" }`.

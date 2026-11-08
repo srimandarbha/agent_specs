@@ -72,7 +72,7 @@ Tier 2 isolates each of the three LLM cognitive nodes and grades their inputs an
 * **Causal Branch Accuracy:** Evaluates whether the LLM selected the correct sub-branch (e.g., Branch 3A vs. 3B vs. 3C). Threshold: $\ge 95\%$.
 
 ### Node 9: `match_remediation_plan` Eval (Catalog Compliance)
-* **Objective:** Validate remediation generation against [`PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json).
+* **Objective:** Validate remediation generation against [`PLAYBOOK_CATALOG.json`](../remediations/PLAYBOOK_CATALOG.json).
 * **Catalog Adherence Metric ($C$):**
   $$C = \mathbb{I}\left(\text{playbook\_id} \in \text{Approved Catalog}\right)$$
   Threshold: **100%**. The LLM must NEVER hallucinate or invent a playbook ID.

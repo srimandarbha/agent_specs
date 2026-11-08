@@ -1,0 +1,8 @@
+{
+  "classification": "not_supported",
+  "confidence": "high",
+  "sub_branch": null,
+  "stop_reason": "pdb_disruptions_allowed_positive",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

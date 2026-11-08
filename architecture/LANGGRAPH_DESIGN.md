@@ -24,7 +24,7 @@ The agent operates in a **strictly read-only mode** with zero cluster mutation t
 6. `query_unified_splunk_dossier`: Execute a **single round-trip multi-index SPL search** spanning `ocp_logs`, `k8s_objects` / KV Store, and `ocp_metrics` (<10s).
 7. `assess_evidence`: Validate timestamps, freshness, and contradictions; deduplicate evidence.
 8. `diagnose`: Evaluate evidence strictly against the loaded `skill.md` decision tree to rank hypotheses.
-9. `match_remediation_plan`: Evaluate diagnosed root cause against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+9. `match_remediation_plan`: Evaluate diagnosed root cause against [`remediations/PLAYBOOK_CATALOG.json`](../remediations/PLAYBOOK_CATALOG.json):
    - Outputs Day-1 Ansible YAML Pseudo-code + verified variables.
    - Outputs copy-pasteable manual `oc` CLI fallback with safety checks.
 
@@ -35,7 +35,7 @@ The agent operates in a **strictly read-only mode** with zero cluster mutation t
 9b. `format_sre_briefing`: Enforces `playbook_match: false` / `null`, structures ruled-out standard cases, and outputs safe, read-only `oc` CLI commands for human SRE triage.
 
 ### Finalization Node (Shared)
-10. `persist_and_report`: Persist incident metadata, evidence citations, and remediation specs to PostgreSQL ([`001_initial.sql`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/db/migrations/001_initial.sql)), returning the final report.
+10. `persist_and_report`: Persist incident metadata, evidence citations, and remediation specs to PostgreSQL ([`001_initial.sql`](../db/migrations/001_initial.sql)), returning the final report.
 
 ---
 
@@ -148,7 +148,7 @@ class InvestigationState(BaseModel):
 1. **Deterministic Bounded Harness:** Track B exploratory triage **never** enters an open ReAct loop. The Python engine fetches the data; the LLM synthesizes it in a single prompt.
 2. **Hardcoded Playbook Disablement for Unknowns:** Track B physically enforces `playbook_match = False` and `playbook_id = null`. Automated playbooks are strictly barred from executing on unclassified anomalies.
 3. **Auditability:** Every diagnosis outputs exact timestamped log lines, object resourceVersions, and metric values supporting the conclusion.
-4. **PostgreSQL System of Record:** Metadata, hypotheses, and generated remediation specs are persisted to PostgreSQL using [`db/migrations/001_initial.sql`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/db/migrations/001_initial.sql).
+4. **PostgreSQL System of Record:** Metadata, hypotheses, and generated remediation specs are persisted to PostgreSQL using [`db/migrations/001_initial.sql`](../db/migrations/001_initial.sql).
 ---
 
 ## 11. Federated evidence adapter clarification (2026-11-08)

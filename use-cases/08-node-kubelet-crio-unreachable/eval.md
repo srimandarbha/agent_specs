@@ -3,12 +3,12 @@
 **Use Case:** `08-node-kubelet-crio-unreachable`  
 **Version:** 2.0.0  
 **Harness Integration:** `tests/evals/test_tier3_scenarios.py`  
-**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/tests/EVALUATION_FRAMEWORK.md)
+**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](../../tests/EVALUATION_FRAMEWORK.md)
 
 ---
 
 ## 1. Test Objective & Ground Truth
-Evaluate the agent's capability to ingest node condition alerts (`Ready: False` or `Ready: Unknown`), correlate with Kubelet node lease timeouts and host journal logs, discriminate between a crashed host systemd service (`kubelet.service`, `crio.service`) and a total hardware/kernel freeze, and output either [`playbook_restart_failed_systemd_unit`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json#L101-L117) or an out-of-band hardware console fallback.
+Evaluate the agent's capability to ingest node condition alerts (`Ready: False` or `Ready: Unknown`), correlate with Kubelet node lease timeouts and host journal logs, discriminate between a crashed host systemd service (`kubelet.service`, `crio.service`) and a total hardware/kernel freeze, and output either [`playbook_restart_failed_systemd_unit`](../../remediations/PLAYBOOK_CATALOG.json#L101-L117) or an out-of-band hardware console fallback.
 
 ---
 

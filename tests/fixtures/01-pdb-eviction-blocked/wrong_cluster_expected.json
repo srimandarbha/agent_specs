@@ -1,0 +1,8 @@
+{
+  "classification": "inconclusive",
+  "confidence": "low",
+  "sub_branch": null,
+  "stop_reason": "wrong_cluster_evidence",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

@@ -42,7 +42,9 @@
         "max_unavailable": null,
         "current_healthy": 2,
         "desired_healthy": 2,
-        "disruptions_allowed": 0
+        "disruptions_allowed": 0,
+        "snapshot_age_s": 45,
+        "overlapping_pdb_count": 1
       },
       "node_details": {
         "name": "worker-01.prod.rhocp",
@@ -58,7 +60,33 @@
       "relevant_metrics": [
         "kube_pod_disruption_budget_status_pod_disruptions_allowed{poddisruptionbudget=\"payments-api-pdb\",namespace=\"payments\"}=0",
         "kube_deployment_status_replicas_available{deployment=\"payments-api\",namespace=\"payments\"}=2"
-      ]
+      ],
+      "workload_details": {
+        "kind": "Deployment",
+        "name": "payments-api",
+        "desired_replicas": 2,
+        "ready_replicas": 2
+      },
+      "sibling_pods": [
+        {
+          "name": "payments-api-7b89-abc",
+          "phase": "Running",
+          "ready": true,
+          "restart_count": 0,
+          "waiting_reason": null,
+          "scheduler_message": null
+        }
+      ],
+      "capacity_details": {
+        "schedulable_nodes": 5,
+        "free_cpu_m": 6000,
+        "free_mem_mi": 24576,
+        "pod_request_cpu_m": 500,
+        "pod_request_mem_mi": 1024
+      }
     }
-  ]
+  ],
+  "freshness": "fresh",
+  "quality": "valid",
+  "adapter_errors": []
 }

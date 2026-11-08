@@ -1,0 +1,8 @@
+{
+  "classification": "supported",
+  "confidence": "high",
+  "sub_branch": "3B_multi_replica_at_min_available",
+  "stop_reason": null,
+  "remediation_kind": "playbook",
+  "playbook_id": "playbook_pdb_scale_up"
+}
