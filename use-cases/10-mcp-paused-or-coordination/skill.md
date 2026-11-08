@@ -1,118 +1,172 @@
-# Skill: Diagnose MCP paused or rollout coordination prevents progress
+# Skill: Fail-Proof Diagnosis for MachineConfigPool Paused or Coordination Block (`10-mcp-paused-or-coordination`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **mcp paused or rollout coordination prevents progress**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get mcp
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | MachineConfigPool is expected to update or rollout is stalled at pool level. | Exit: `inconclusive: lifecycle_stage_not_updating` |
+| **Trigger Signal** | Target MCP has `spec.paused == true` OR MCC logs match: `(?i)(pool.*is paused.*skipping|pool.*paused.*not updating|maxUnavailable.*nodes.*unavailable)` OR Prometheus metric `machine_config_pool_status_paused == 1`. | Exit: `not_supported: pool_is_not_paused` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get mcp <pool> -o yaml
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract MCP Spec & Status]           [spec.paused == false]
+            Pool name, spec.paused, counts, conditions    Check Concurrency / Degraded
+                         │                                         │
+                         ▼                                         ▼
+            [Evaluate spec.paused == true]                [Step 2B: Concurrency / Limits]
+            Verify Degraded Condition & Node States       unavailableCount >= maxUnavailable?
+                         │                                         │
+         ┌───────────────┴───────────────┐               ┌─────────┴─────────┐
+         ▼                               ▼               ▼                   ▼
+  [Pool Condition Degraded == True] [Pool Degraded == False] [Normal Rollout] [Pool Degraded]
+  DO NOT UNPAUSE!                   Verify Node Health   Serialization   Handoff to 11/12
+  ──► Branch 3C: Degraded Block     (Proceed to Step 3)  ──► Exit:       (Config drift/
+                                                             not_supported render apply)
 ```
-```bash
-oc describe mcp <pool>
+
+### Step 1: Extract MachineConfigPool Configuration & Status
+1. In `k8s_objects` / KV Store, lookup the target `MachineConfigPool` object:
+   * Evaluate `spec.paused` (boolean).
+   * Evaluate `status.conditions[?(@.type=="Degraded")].status`.
+   * Record `status.machineCount`, `status.readyMachineCount`, `status.updatedMachineCount`, and `status.unavailableMachineCount`.
+   * Record `spec.maxUnavailable` (integer or percentage).
+
+### Step 2: Differentiate Stale Pause vs. Expected Concurrency Serialization
+1. **If `spec.paused == false`:**
+   * Compare `status.unavailableMachineCount` against `spec.maxUnavailable`:
+     * If `unavailableMachineCount >= maxUnavailable`: The pool is actively updating other nodes up to its concurrency limit. This is **normal serialization behavior**, not an incident. Exit with `not_supported: pool_rollout_in_progress_respecting_concurrency_limits`.
+     * If `unavailableMachineCount < maxUnavailable` and pool is stalled: Check if the pool is Degraded. If `Degraded == True`, handoff to `use-cases/11-config-drift-mcd-degraded` or `use-cases/12-mcd-config-render-apply`.
+2. **If `spec.paused == true`:**
+   * Evaluate `status.conditions[?(@.type=="Degraded")]`:
+     * If `status == "True"`: **DO NOT UNPAUSE.** The pool was paused due to an error, or unpausing will push a broken configuration to all nodes. Proceed to **Branch 3C**.
+     * If `status == "False"`: Verify that all currently ready nodes in the pool are healthy. If all nodes are healthy and a new configuration is waiting: Proceed to **Branch 3A (Stale Maintenance Pause)**.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get nodes --show-labels
+                                [MachineConfigPool Stalled]
+                                             │
+              ┌──────────────────────────────┼──────────────────────────────┐
+              ▼                              ▼                              ▼
+    [Branch 3A: Stale Pause]       [Branch 3B: Concurrency Limit] [Branch 3C: Pool Degraded Interlock]
+    spec.paused == true            unavailable >= maxUnavailable  spec.paused == true AND
+    Pool healthy, ready to rollout Normal serialization           Pool is Degraded (Render/Drift)
+              │                              │                              │
+              ▼                              ▼                              ▼
+    Playbook: unpause_mcp          Exit: not_supported            Playbook: null (Safety Interlock)
+    AAP Extra Vars: pool_name      (No remediation needed)        CLI Fallback: Fix Degraded First
 ```
-```bash
-oc get co machine-config
+
+* **Branch 3A: Stale Administrative Maintenance Pause (Clean Pool)**
+  * *Evidence:* `spec.paused == true`; `status.conditions[?(@.type=="Degraded")].status == "False"`; `status.conditions[?(@.type=="Updated")].status == "False"`; `readyMachineCount == machineCount`; no nodes in the pool report `NotReady`.
+  * *Diagnosis:* The pool was intentionally paused by an administrator for maintenance or canary validation. The maintenance window is finished, but the unpause step was omitted, leaving the rollout stalled.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_unpause_mcp`** (`extra_vars: { target_cluster, target_mcp_name }`).
+
+* **Branch 3B: Rollout Serialization / MaxUnavailable Concurrency Limit**
+  * *Evidence:* `spec.paused == false`; `status.unavailableMachineCount >= spec.maxUnavailable`; MCC logs show: `pool is updating, waiting for unavailable nodes to complete`.
+  * *Diagnosis:* The pool is deliberately throttling node updates to honor `maxUnavailable` (default 1). Subsequent nodes cannot begin draining until the currently updating node finishes reboot and uncordons.
+  * *Remediation Route:* **No remediation required.** Report `not_supported: pool_rollout_in_progress_respecting_concurrency_limits`.
+
+* **Branch 3C: Pool Degraded Safety Interlock**
+  * *Evidence:* `spec.paused == true` AND `status.conditions[?(@.type=="Degraded")].status == "True"`. MCD logs in `ocp_logs` show configuration render failure, Ignition parse error, or host config drift.
+  * *Diagnosis:* The pool is degraded. Unpausing it would propagate corrupted machine configs or systemd configs across the entire cluster, risking mass node outages.
+  * *Remediation Route:* **CRITICAL SAFETY INTERLOCK $\rightarrow$ Manual CLI Fallback Only.** Strictly prohibit unpausing until root cause of degradation is resolved.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_unpause_mcp`)
+**Conditions for Match:**
+1. Branch 3A is satisfied (`spec.paused == true`, `status.conditions.Degraded == "False"`).
+2. All nodes in the pool report `Ready == True`.
+3. ClusterOperator `machine-config` is `Available == True`.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_unpause_mcp",
+  "playbook_file": "playbooks/remediate-unpause-mcp.yml",
+  "risk_level": "medium",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "target_mcp_name": "{{ target_mcp_name }}"
+  },
+  "verification_goal": "mcp_paused == false and mcp_updating == true"
+}
 ```
-```bash
-oc get clusterversion
+
+---
+
+### Rule 2: Manual CLI Fallback Generation (Branch 3C - Pool Degraded)
+**Triggered when:** Pool is paused but conditions report `Degraded: True`.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "MachineConfigPool is Degraded; unpausing prohibited to prevent cascading node failures.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Inspect MCP status and degraded reason:",
+      "oc describe mcp {{ target_mcp_name }}",
+      "# 2. Check MachineConfig Operator status:",
+      "oc get co machine-config -o yaml"
+    ],
+    "remediation_steps": [
+      "# 3. Review MCC logs for configuration render errors:",
+      "oc -n openshift-machine-config-operator logs deployment/machine-config-controller -c machine-config-controller | grep -Ei 'degraded|render|error' | tail -n 30",
+      "# 4. Resolve the invalid MachineConfig or drift condition before unpausing.",
+      "# 5. Once Degraded condition clears, unpause the pool safely:",
+      "oc patch mcp {{ target_mcp_name }} --type=merge -p '{\"spec\":{\"paused\":false}}'"
+    ],
+    "safety_warning": "Never unpause a Degraded MachineConfigPool without first resolving the underlying Ignition/configuration error.",
+    "verification": [
+      "oc get mcp {{ target_mcp_name }} -o jsonpath='{.spec.paused}{\"\\n\"}{.status.conditions[?(@.type==\"Degraded\")].status}'"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: Pool reports paused, desired/current config mismatch persists, or rollout does not begin even though no active drain error is logged.
-5. Validate the primary cause using these evidence sources: MCP spec/status, pause field, node selectors and labels, desired/current rendered config, unavailable counts, ClusterOperator conditions.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Confirm the pause and maintenance intent with the pool owner. If paused intentionally, resolve the scheduling/maintenance plan and get approval before unpausing; unpausing can apply all queued configuration, not just the change being investigated. Validate selectors and availability limits before modifying them.
-8. Explain the operational risk: Unpausing can trigger a broad rollout; changing maxUnavailable can disrupt more nodes than expected. Never unpause or raise disruption limits without approval.
-9. Define verification using: Pool is intentionally unpaused or correctly configured, desired rollout begins, and node availability stays within the approved limit.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-## Kubernetes object observability requirements
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing MCP Record:** Target pool specified in alert is not found in `index=k8s_objects` or KV Store. Report: `inconclusive: mcp_record_missing`.
+3. **Active Node Degradation:** One or more nodes in the pool report `Ready == False` or `Degraded == True`. Prohibit unpausing. Report: `inconclusive: pool_contains_unready_nodes`.
+4. **Master / Control Plane Pool Caution:** If target pool is `master`, enforce heightened human confirmation before executing any unpause playbook.
 
-**Scenario:** MCP paused or rollout coordination
+---
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+## 6. Post-Remediation Verification Contract
 
-### Required object evidence
-- MachineConfigPool (spec.paused, maxUnavailable, configuration, conditions, machine/updated/ready/unavailable counts)
-- Node (currentConfig, desiredConfig, state/reason and drain coordination annotations when present; conditions; unschedulable)
-- MachineConfig (desired configuration identity)
-- Event (MCP/node rollout-related events)
-- ClusterOperator/ClusterVersion status if rollout gate requires broader context
+Whether executed via AAP playbook or manual CLI, recovery MUST be proven using these exact signals:
 
-### Correlation rule
-Correlate MCP pause/conditions and counters with target Node configuration annotations, MCC/MCD logs and drain timestamps. Verify exact annotation names against the deployed version.
-
-### Diagnosis gate
-Paused or Updating alone is not a drain-failure diagnosis. Require evidence that rollout coordination or node state prevents the specific lifecycle transition.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **MCP paused/coordination**. Read MCP spec/status, paused flag, maxUnavailable, node annotations and rollout status. Paused or updating state alone does not prove drain failure.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Pause Flag Cleared:** `mcp.spec.paused == false`.
+2. **Rollout Transition:** `mcp.status.conditions[?(@.type=="Updating")].status == "True"`.
+3. **Node Progression:** MCC logs record the first batch of nodes in the pool initiating drain or applying configurations within approved `maxUnavailable` limits.

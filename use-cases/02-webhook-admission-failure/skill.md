@@ -1,115 +1,190 @@
-# Skill: Diagnose Admission webhook blocks pod deletion or eviction
+# Skill: Fail-Proof Diagnosis for Admission Webhook Blocks Pod Eviction (`02-webhook-admission-failure`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **admission webhook blocks pod deletion or eviction**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get validatingwebhookconfigurations
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` (cordoned), and MCO is draining the node. | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | MCC or API-server logs match: `(?i)(failed calling webhook|webhook.*denied.*eviction|admission webhook.*context deadline exceeded|x509: certificate.*webhook|connection refused.*webhook)` on an eviction subresource call. | Exit: `not_supported: no_webhook_admission_error_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get mutatingwebhookconfigurations
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Webhook & Interceptor]       [No Webhook Error Logged]
+            Webhook name, failing pod, error string       ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Interceptor Discrimination Gate]
+            Is webhook virt-launcher-eviction-interceptor?
+                         │
+         ┌───────────────┴───────────────────────────────┐
+         ▼                                               ▼
+  [YES: KubeVirt Interceptor]                     [NO: Third-Party / Security Webhook]
+  VM is not live-migratable!                      Proceed to evaluate webhook health
+  ──► Handoff to 05-ocv-vm-not-migratable                 │
+                         ┌────────────────────────────────┼────────────────────────────────┐
+                         ▼                                ▼                                ▼
+              [Connection Refused / 0 Endpoints]   [x509 Certificate Expired]      [Network Timeout]
+              Webhook controller pod crashed       Serving certificate expired;    Apiserver-to-pod network
+              or deployment unready                service-ca refresh needed       blocked by NetworkPolicy
+              ──► Branch 3A: Backend Down          ──► Branch 3B: Cert Expired     ──► Branch 3C: Network
 ```
-```bash
-oc get endpoints,endpointslices -A | grep -i <webhook-service>
+
+### Step 1: Extract Webhook Name & Blocker Pod
+1. Extract `webhook_name`, `target_namespace`, and `failing_pod_name` from MCC or apiserver logs in `index=ocp_logs`:
+   ```regex
+   (?i)failed calling webhook "(?<webhook_name>[^"]+)": Post "(?<webhook_url>[^"]+)": (?<error_reason>.*)
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`.
+
+### Step 2: Interceptor Discrimination Gate
+1. **Check Webhook Identity:**
+   * If `webhook_name == "virt-launcher-eviction-interceptor.kubevirt.io"`:
+     * This is NOT an admission infrastructure failure. This is OpenShift Virtualization purposefully rejecting eviction because the virtual machine is not live-migratable.
+     * **HALT IMMEDIATELY $\rightarrow$ Handoff to `use-cases/05-ocv-vm-not-migratable`**.
+2. **If webhook is a general validating/mutating webhook (e.g. Gatekeeper, Kyverno, Vault, custom policy):**
+   * Inspect error string and proceed to Step 3.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get pods -A -o wide | grep -i <webhook>
+                            [Admission Webhook Eviction Block]
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              ▼                             ▼                             ▼
+    [Branch 3A: Backend Down]     [Branch 3B: Cert Expired]     [Branch 3C: Network / Timeout]
+    Pod in CrashLoopBackOff or    x509 certificate expired;     NetworkPolicy or egress firewall
+    0 endpoints on webhook svc    apiserver mTLS rejected       blocks apiserver on port 443/8443
+              │                             │                             │
+              ▼                             ▼                             ▼
+    Playbook: null (Risk)         Playbook: null (Security)     Playbook: null (Network)
+    CLI Fallback: Fix Controller  CLI Fallback: Refresh Cert    CLI Fallback: Audit NetPolicy
 ```
-```bash
-oc -n openshift-kube-apiserver logs <apiserver-pod> --since=2h | grep -Ei 'webhook|failed calling|timeout|<webhook-name>'
+
+* **Branch 3A: Webhook Controller Backend Down / 0 Ready Endpoints**
+  * *Evidence:* Error contains `connect: connection refused` or `no endpoints available for service <webhook_svc>`. In `index=ocp_logs`, webhook controller pods are in `CrashLoopBackOff`, `Pending`, or scaled to 0 replicas.
+  * *Diagnosis:* The admission webhook server is down. Because its `failurePolicy` is configured as `Fail`, kube-apiserver rejects all pod evictions matching the webhook's rules.
+  * *Remediation Route:* **DO NOT delete the webhook configuration.** Route to **Manual CLI Fallback**:
+    - Identify the crashing webhook deployment.
+    - Provide commands to inspect logs, fix crashes, or scale up the webhook controller.
+
+* **Branch 3B: Webhook Serving TLS Certificate Expired**
+  * *Evidence:* Error contains `x509: certificate has expired or is not yet valid` or `x509: certificate signed by unknown authority`.
+  * *Diagnosis:* The webhook server's TLS certificate (managed by OpenShift `service-ca` or cert-manager) has expired, preventing the API server from establishing a secure admission channel.
+  * *Remediation Route:* **Manual CLI Fallback (Certificate Renewal)**. Rotate the webhook serving secret or trigger OpenShift service-ca re-injection.
+
+* **Branch 3C: NetworkPolicy or SDN Route Blocking Apiserver-to-Webhook Traffic**
+  * *Evidence:* Webhook controller pod is running and ready, but apiserver reports `context deadline exceeded` or `i/o timeout` connecting to `https://<service>.<namespace>.svc:443`.
+  * *Diagnosis:* A restrictive `NetworkPolicy` in the webhook namespace or an egress firewall blocks inbound traffic from host-network control plane nodes to pod IP addresses.
+  * *Remediation Route:* **Manual CLI Fallback (NetworkPolicy & Security Group Triage)**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Absolute Safety Rule on Admission Webhooks
+> [!CAUTION]
+> The diagnostic agent MUST NEVER execute autonomous playbooks to delete or disable admission webhooks (`oc delete validatingwebhookconfiguration ...`). Admission webhooks enforce enterprise compliance, image vulnerability validation, and security boundaries. Deleting webhooks exposes clusters to unvalidated workloads and compliance violations.
+
+### Rule 1: Manual CLI Fallback Generation (Branch 3A - Webhook Backend Down)
+**Triggered when:** Webhook controller pods are crashed or unready.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Admission webhook backend is offline; failurePolicy: Fail blocks all eviction requests.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Locate the failing webhook configuration and target service:",
+      "oc get validatingwebhookconfigurations,mutatingwebhookconfigurations | grep -i {{ webhook_name }}",
+      "# 2. Check endpoints and pod health for the webhook service:",
+      "oc get endpoints -A | grep -i {{ webhook_service_name }}",
+      "oc get pods -n {{ webhook_namespace }} -l {{ webhook_selector }} -o wide"
+    ],
+    "remediation_steps": [
+      "# 3. Inspect webhook pod logs to identify why the server crashed:",
+      "oc -n {{ webhook_namespace }} logs deployment/{{ webhook_deployment }} --tail=100",
+      "# 4. Restart or scale the webhook deployment to restore service:",
+      "oc -n {{ webhook_namespace }} rollout restart deployment/{{ webhook_deployment }}",
+      "# 5. EMERGENCY ONLY (Requires security sign-off): Temporarily set failurePolicy to Ignore:",
+      "# oc patch validatingwebhookconfiguration {{ webhook_name }} --type=json -p '[{\"op\":\"replace\",\"path\":\"/webhooks/0/failurePolicy\",\"value\":\"Ignore\"}]'"
+    ],
+    "safety_warning": "Changing failurePolicy to Ignore bypasses admission validation for all workloads. Ensure explicit security team approval before patching.",
+    "verification": [
+      "oc get endpoints -n {{ webhook_namespace }} {{ webhook_service_name }}",
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: MCC log or API-server log includes `failed calling webhook`, `context deadline exceeded`, `context canceled`, or an explicit webhook denial.
-5. Validate the primary cause using these evidence sources: Exact webhook name and operation from API-server logs; webhook configuration rules and failurePolicy; service/endpoints; webhook pod health; API-server health and network events.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Repair the webhook service, endpoints, certificate, policy or network path. Determine whether it is the eviction interceptor or an unrelated webhook. Any bypass/removal must be a narrowly scoped, approved emergency change with a saved manifest, owner sign-off, time limit, and immediate restoration plan.
-8. Explain the operational risk: Deleting or disabling admission webhooks can bypass security, mutation, validation, or VM-protection controls. Do not do this as a first response.
-9. Define verification using: The exact webhook operation succeeds without bypassing unrelated controls, MCC advances, and any emergency policy change is restored.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - TLS Certificate Expired)
+**Triggered when:** Webhook returns x509 certificate validation errors.
 
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Webhook serving TLS certificate expired; apiserver mTLS rejected.",
+  "manual_cli_fallback": {
+    "risk_level": "medium",
+    "pre_checks": [
+      "# 1. Inspect TLS secret expiration date:",
+      "oc -n {{ webhook_namespace }} get secret {{ webhook_secret }} -o jsonpath='{.data.tls\\.crt}' | base64 -d | openssl x509 -noout -enddate"
+    ],
+    "remediation_steps": [
+      "# 2. For OpenShift service-ca managed certificates, delete secret to trigger auto-regeneration:",
+      "oc -n {{ webhook_namespace }} delete secret {{ webhook_secret }}",
+      "# 3. Restart the webhook pod to mount the fresh certificate:",
+      "oc -n {{ webhook_namespace }} rollout restart deployment/{{ webhook_deployment }}"
+    ],
+    "safety_warning": "Verify service.beta.openshift.io/serving-cert-secret-name annotation is present on the service before deleting secret.",
+    "verification": [
+      "oc -n {{ webhook_namespace }} get secret {{ webhook_secret }}"
+    ]
+  }
+}
+```
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** Admission webhook failure
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Required object evidence
-- Event (involved object, reason/message, event time)
-- ValidatingWebhookConfiguration and MutatingWebhookConfiguration (rules, operations, selectors, failurePolicy, timeoutSeconds, Service reference)
-- Service and EndpointSlice (selector, ports, endpoint readiness/serving/terminating)
-- Webhook Pod (namespace/name, readiness, restart/termination state, owner reference)
-- Node (if webhook Pod/node health is implicated)
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **KubeVirt Interceptor Present:** Webhook is `virt-launcher-eviction-interceptor`. Halt and hand off to `use-cases/05-ocv-vm-not-migratable`.
+3. **Webhook Already Removed:** Webhook named in log error is no longer registered in cluster inventory. Report: `not_supported: webhook_already_removed`.
+4. **Transient Network Hiccup:** Single timeout logged, but subsequent eviction calls succeed. Report: `not_supported: transient_network_timeout`.
 
-### Correlation rule
-Correlate MCC/API-server/webhook container logs with webhook name, operation, Service reference and endpoint readiness at the incident time. Configuration alone does not establish that a webhook was unavailable.
+---
 
-### Diagnosis gate
-Confirm only with an explicit admission/webhook failure tied to the relevant operation and corroborating configuration or availability evidence. A webhook object or unhealthy endpoint without matching failure logs is supporting evidence, not proof.
+## 6. Post-Remediation Verification Contract
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+Whether executed via webhook controller restart or certificate rotation, recovery MUST be proven using these exact signals:
 
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Admission webhook failure**. Correlate eviction/delete request failure with webhook name, service/endpoints, timeout/failurePolicy and API audit/controller logs. Do not recommend deleting or weakening the webhook.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Webhook Endpoints Ready:** The webhook service reports at least 1 healthy, ready endpoint (`subsets.addresses` populated).
+2. **Eviction Passes Admission:** API server logs in `index=ocp_logs` confirm eviction admission requests returning HTTP 200/201.
+3. **MCO Drain Resumes:** MCC logs confirm node drain advancing past the blocked pod.

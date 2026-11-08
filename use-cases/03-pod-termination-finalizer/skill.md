@@ -1,115 +1,204 @@
-# Skill: Diagnose Pod remains Terminating or finalizer cleanup stalls
+# Skill: Fail-Proof Diagnosis for Pod Termination or Finalizer Stalls (`03-pod-termination-finalizer`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **pod remains terminating or finalizer cleanup stalls**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get pod <pod> -n <namespace> -o yaml
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` (cordoned), and MCO state is `Updating` (draining). | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | MCC or Kubelet log matches: `(?i)(error when waiting for pod.*to terminate|waiting for pod.*to terminate|failed to drain node.*pod.*terminating)` | Exit: `not_supported: no_pod_termination_error_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc describe pod <pod> -n <namespace>
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Blocker Pod]              [No Termination Error]
+            Namespace, Pod Name, DeletionTimestamp     ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Inspect Pod Metadata & Node]
+            Check deletionTimestamp, Node Ready, & metadata.finalizers
+                         │
+         ┌───────────────┼───────────────────────────────┐
+         ▼               ▼                               ▼
+  [Pod Missing/Gone]  [Node NotReady]            [Pod Has DeletionTimestamp]
+  ──► Terminated!     ──► Handoff to             Evaluate metadata.finalizers
+      Drain resuming      08-node-unreachable                    │
+                         ┌───────────────────────────────────────┴───────────────────────────────────────┐
+                         ▼                                                                               ▼
+              [finalizers IS NOT empty]                                                       [finalizers IS empty / null]
+              ──► Finalizer Cleanup Stalled!                                                  ──► Container Runtime / CRI-O Stalled!
+                  (Proceed to Branch 3A / 3B)                                                     (Proceed to Branch 3C)
 ```
-```bash
-oc get pod <pod> -n <namespace> -o jsonpath='{.metadata.deletionTimestamp}{"\n"}{.metadata.finalizers}{"\n"}{.spec.terminationGracePeriodSeconds}{"\n"}'
+
+### Step 1: Blocker Pod & Error Extraction
+1. Extract `target_namespace`, `failing_pod_name`, and elapsed termination time from MCC logs in `ocp_logs`:
+   ```regex
+   (?i)error when waiting for pod "(?<target_namespace>[^/]+)/(?<failing_pod_name>[^"]+)" to terminate
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`:
+   * Confirm Pod `metadata.deletionTimestamp` is set.
+   * If Pod is not found in KV Store or status is no longer present, the pod has already terminated. Report `not_supported: pod_already_terminated`.
+   * Check target Node readiness condition:
+     * If Node condition `Ready == False` or `Unknown`, Kubelet cannot report pod deletion to the API server. Handoff to `use-cases/08-node-kubelet-crio-unreachable`.
+
+### Step 2: Differentiate Finalizer Block vs. Container Runtime Hang
+1. Inspect `metadata.finalizers` array of the target Pod in `k8s_objects` / KV Store:
+   * **Case 2A: `metadata.finalizers` contains entries:**
+     * If any finalizer contains `pvc-protection` or `volume`: proceed to **Branch 3B (Storage Interlock)**.
+     * If finalizers are custom operator or system controllers (e.g. `*.openshift.io/*`, `*.k8s.io/*`, or third-party controllers): proceed to **Branch 3A (Stalled Operator Controller)**.
+   * **Case 2B: `metadata.finalizers` is empty `[]` or null:**
+     * The API server is waiting for Kubelet/CRI-O to confirm all containers have stopped and cgroups have been torn down. Proceed to **Branch 3C (Container Runtime / PreStop Hang)**.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc describe node <node>
+                                [Pod Termination Stalled]
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              ▼                             ▼                             ▼
+    [Branch 3A: Operator Finalizer] [Branch 3B: Storage Finalizer] [Branch 3C: Hung CRI-O / PreStop]
+    Custom controller dead/crashing PVC protection / Volume lock   FailedKillPod / D-state process
+              │                             │                             │
+              ▼                             ▼                             ▼
+    Playbook: null (Data Risk)      Handoff: 04-storage-unmount   Playbook: null (Host Kernel Risk)
+    CLI Fallback: Fix Controller    Resolve VolumeAttachment      CLI Fallback: Inspect CRI-O/PID
 ```
-```bash
-oc get events -A --sort-by=.lastTimestamp
+
+* **Branch 3A: Stalled Operator / Controller Finalizer**
+  * *Evidence:* `metadata.finalizers` contains non-empty strings (e.g. `finalizers.kubevirt.io/...`, `operator.ibm.com/lock`, `acm.cleaner.io`).
+  * *Corroboration:* Splunk query on `ocp_logs` for the owning operator shows `CrashLoopBackOff`, leader election loss, or repeated reconciliation errors (e.g., `failed to clean up external resource: connection refused`).
+  * *Diagnosis:* The controlling operator responsible for executing cleanup logic before stripping its finalizer is either crashed, degraded, or unable to communicate with an external API.
+  * *Remediation Route:* **DO NOT forcefully remove the finalizer autonomously.** Removing finalizers manually risks orphaning external infrastructure or state corruption. Route to **Manual CLI Fallback** with controller diagnostics.
+
+* **Branch 3B: Storage Interlock / PVC Protection Finalizer**
+  * *Evidence:* `metadata.finalizers` contains `kubernetes.io/pvc-protection` AND volume attachment for the pod's persistent volume is still locked or unmounting.
+  * *Diagnosis:* The pod cannot terminate because storage unmounting is blocked by the CSI subsystem.
+  * *Remediation Route:* **Handoff to `use-cases/04-storage-unmount-detach`**. Resolving the VolumeAttachment/CSI daemon issue will clear this finalizer automatically.
+
+* **Branch 3C: Hung Container Teardown / PreStop Hook / CRI-O Deadlock**
+  * *Evidence:*
+    1. `metadata.finalizers` is empty or null.
+    2. Elapsed time since `metadata.deletionTimestamp` exceeds `spec.terminationGracePeriodSeconds` (default 30s) by > 120s.
+    3. `Event` in `k8s_objects` shows `Reason == "FailedKillPod"` with message `error killing pod: context deadline exceeded` OR `failed to "KillPodSandbox"`.
+    4. Kubelet / CRI-O logs in `ocp_logs` show `uninterruptible sleep` or `preStop hook failed / deadline exceeded`.
+  * *Diagnosis:* The application process is deadlocked in kernel uninterruptible sleep (`D-state`, frequently due to NFS/remote I/O hangs) or a `preStop` script is hanging indefinitely without respecting SIGTERM/SIGKILL.
+  * *Remediation Route:* **Manual CLI Fallback**. Host-level inspection of the container cgroup and safe termination.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Absolute Safety Rule on Finalizers
+> [!CAUTION]
+> The diagnostic agent MUST NEVER execute or recommend automated playbook removal of Kubernetes finalizers (`oc patch pod ... -p '{"metadata":{"finalizers":null}}'`) without explicit operator health verification and human sign-off. Stripping finalizers unconditionally can cause severe split-brain storage access and orphaned cloud infrastructure.
+
+### Rule 1: Handoff to Storage Playbook (Branch 3B)
+If Branch 3B is met and VolumeAttachment RPC failure is isolated, delegate execution to `playbook_restart_csi_driver` defined in `use-cases/04-storage-unmount-detach`.
+
+---
+
+### Rule 2: Manual CLI Fallback Generation (Branch 3A - Operator Finalizer Stalled)
+**Triggered when:** Pod finalizer is retained by an operator or custom controller.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Finalizer retained by controller; automated deletion prohibited to prevent resource leaks.",
+  "manual_cli_fallback": {
+    "risk_level": "medium",
+    "pre_checks": [
+      "# 1. Identify lingering finalizers on the terminating pod:",
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }} -o jsonpath='{.metadata.finalizers}{\"\\n\"}'",
+      "# 2. Locate the controlling operator pod in the management namespace:",
+      "oc get pods -A | grep -Ei '{{ controller_keyword }}'"
+    ],
+    "remediation_steps": [
+      "# 3. Check operator logs to identify why finalization is failing:",
+      "oc -n {{ controller_namespace }} logs deployment/{{ controller_deployment }} --tail=100",
+      "# 4. If the controller is in CrashLoopBackOff, restart it to allow cleanup completion:",
+      "oc -n {{ controller_namespace }} rollout restart deployment/{{ controller_deployment }}",
+      "# 5. CONDITIONAL ONLY: If external resources are verified clean by owner, remove finalizer manually:",
+      "oc -n {{ target_namespace }} patch pod {{ failing_pod_name }} --type=merge -p '{\"metadata\":{\"finalizers\":[]}}'"
+    ],
+    "safety_warning": "Only patch finalizers to empty if the underlying external resource (database, cloud LB, or volume) has been manually confirmed deleted.",
+    "verification": [
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}",
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: MCC reports `error when waiting for pod ... to terminate` and repeats after the drain-helper timeout; pod has a persistent deletionTimestamp.
-5. Validate the primary cause using these evidence sources: Pod deletionTimestamp, grace period, container states, finalizers, owner references, events, node Ready condition, kubelet/CRI-O logs where available.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Identify whether the blocker is application shutdown, a finalizer controller, kubelet, or CRI-O. Repair the owning controller or node/runtime issue. Remove a finalizer only after proving its cleanup obligation is complete or explicitly accepting the consequence through an approved incident decision.
-8. Explain the operational risk: Nulling finalizers or force-deleting a pod can orphan external resources or bypass graceful shutdown; it is not a generic drain fix.
-9. Define verification using: Pod termination completes normally or an approved, documented exception resolves the finalizer safely; the drain is retried and the node lifecycle advances.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+### Rule 3: Manual CLI Fallback Generation (Branch 3C - Hung PreStop / CRI-O Kill Failure)
+**Triggered when:** `metadata.finalizers` is empty but pod containers fail to exit after grace period.
 
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Container runtime failed to kill pod sandbox; potential kernel D-state process or hung preStop hook.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Confirm pod termination grace period expiration:",
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }} -o jsonpath='Deletion: {.metadata.deletionTimestamp}, GracePeriod: {.spec.terminationGracePeriodSeconds}{\"\\n\"}'",
+      "# 2. Inspect node Kubelet / CRI-O logs for FailedKillPod events:",
+      "oc adm node-logs {{ node_name }} --path=journal | grep -Ei 'FailedKillPod|KillPodSandbox|{{ failing_pod_name }}' | tail -n 30"
+    ],
+    "remediation_steps": [
+      "# 3. Open debug session on the draining node to inspect container processes:",
+      "oc debug node/{{ node_name }} -- chroot /host crictl ps --name {{ failing_pod_name }}",
+      "# 4. Check for D-state processes or force kill the container sandbox via crictl:",
+      "oc debug node/{{ node_name }} -- chroot /host crictl stopp <container_id>",
+      "# 5. If CRI-O is unresponsive, restart crio daemon on the node:",
+      "oc debug node/{{ node_name }} -- chroot /host systemctl restart crio"
+    ],
+    "safety_warning": "Restarting CRI-O on a draining node will stop remaining pods on that node. Ensure the node is cordoned (SchedulingDisabled) before restarting.",
+    "verification": [
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}",
+      "oc adm node-logs {{ node_name }} --path=journal | grep -Ei 'kubelet.*NodeHasNoDiskPressure'"
+    ]
+  }
+}
+```
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** Pod termination or finalizer stall
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Required object evidence
-- Pod (UID, nodeName, deletionTimestamp, finalizers, phase, conditions, container states)
-- Event (FailedKillPod, killing, termination or finalizer-related reason/message where present)
-- Owning Deployment/ReplicaSet/StatefulSet/DaemonSet (ownerReferences, selector, replica status)
-- PVC/PV/VolumeAttachment when volume cleanup is implicated
-- Node (readiness and pressure conditions)
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or times out after 1 retry. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Pod Disappeared (Race Condition):** The MCC log reports termination error, but Pod record is completely absent in both `k8s_objects` and live inventory. Report: `not_supported: pod_already_terminated`.
+3. **Node Network Partition:** Target node Kubelet heartbeat is missing (`Ready: Unknown`). Inability to terminate pods is a symptom of node failure, not pod finalizer. Report: `inconclusive: node_network_partitioned_handoff_to_08`.
+4. **Ambiguous Multi-Finalizer Contradiction:** Pod has multiple finalizers owned by different teams. Report: `inconclusive: multi_owner_finalizers_detected`.
 
-### Correlation rule
-Use the Pod UID and deletion timestamp to establish how long termination has been pending; correlate kubelet/runtime and controller logs, events, finalizer owners, and storage relationships.
+---
 
-### Diagnosis gate
-Do not recommend removing a finalizer solely because it exists. Confirm the specific cleanup controller or dependency is stalled using logs/events and object state; otherwise mark the cause probable/inconclusive.
+## 6. Post-Remediation Verification Contract
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+Whether executed via operator recovery or human CLI steps, recovery MUST be proven using these exact signals:
 
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Pod termination/finalizer**. Confirm pod deletionTimestamp, finalizers, owner, node reachability and relevant controller events. Never clear finalizers automatically.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Pod Record Evaporation:** Target pod no longer exists in `index=k8s_objects` / KV Store lookup for the target cluster and namespace.
+2. **Kubelet Clean Slate:** No new `FailedKillPod` events emitted for the affected pod UID in `index=k8s_objects` (Events).
+3. **MCO Drain Resumes:** `index=ocp_logs` records MCC advancing node drain (e.g. `evicting next pod` or `drain complete for node`).

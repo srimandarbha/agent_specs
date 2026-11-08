@@ -15,15 +15,16 @@ Instead of an unconstrained API mirror, this requirement specifies the **"Golden
 
 ---
 
-## 2. The "Golden Six" Allowlist
+## 2. The Core Kubernetes Object Allowlist
 
 | Object Kind | API Group / Version | What It Provides That Metrics/Logs Cannot | Excluded Fields |
 |---|---|---|---|
 | **`Pod`** | `core/v1` | `metadata.finalizers` (UC 03), `metadata.labels` for PDB selector matching (UC 01), `metadata.deletionTimestamp`. | `metadata.managedFields`, `spec.containers[*].env`, `spec.containers[*].envFrom` |
 | **`PodDisruptionBudget`** | `policy/v1` | `spec.selector` (resolves which PDB owns a pod when multiple PDBs exist in a namespace). | `metadata.managedFields` |
-| **`Node`** | `core/v1` | `metadata.annotations`: MCO drain coordination keys (`desiredDrain` vs `lastAppliedDrain` in UC 14), `spec.unschedulable`. | `metadata.managedFields`, `status.images` |
-| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04). | `metadata.managedFields` |
+| **`Node`** | `core/v1` | `metadata.annotations`: MCO drain coordination keys (`desiredDrain` vs `lastAppliedDrain` in UC 14), `spec.unschedulable`, attachable volume quotas. | `metadata.managedFields`, `status.images` |
+| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04) and per-node volume attachment tallies (UC 16). | `metadata.managedFields` |
 | **`MachineConfigPool`** | `machineconfiguration.openshift.io/v1` | Current vs. desired rendered config references, pool rollout progress, and paused flags (UC 10, 11, 12). | `metadata.managedFields` |
+| **`MachineConfig`** | `machineconfiguration.openshift.io/v1` | Target file paths (`spec.config.storage.files[*].path`), systemd unit definitions (`spec.config.systemd.units`), kernel arguments (`spec.kernelArguments`), and OS image URL for diagnosing config drift and render collisions (UC 11, 12). | `metadata.managedFields`, `spec.config.storage.files[*].contents` (raw base64 file payloads stripped to prevent collector OOMs and Splunk index bloat) |
 | **`Event`** | `core/v1` | Fast chronological timeline of eviction denials and scheduling rejections. | None |
 
 ---
@@ -38,7 +39,7 @@ Instead of an unconstrained API mirror, this requirement specifies the **"Golden
 
 ---
 
-## 4. Mapping to the 15 MCO Troubleshooting Cases
+## 4. Mapping to the 16 MCO Troubleshooting Cases
 
 | Case | Primary Evidence Source | Object Evidence from KV Store / k8s_objects |
 |---|---|---|
@@ -52,11 +53,12 @@ Instead of an unconstrained API mirror, this requirement specifies the **"Golden
 | 08. Node/kubelet/CRI-O | `ocp_logs` (journald / CRI-O) + `ocp_metrics` | `Node` |
 | 09. API/etcd latency | `ocp_logs` (etcd timeouts) + `ocp_metrics` | `Event` |
 | 10. MCP paused/rollout | `ocp_metrics` (`mco_machine_config_pool_paused`) | `MachineConfigPool` + `Node` |
-| 11. Configuration drift | `ocp_logs` (MCD diff log) | `Node` + `MachineConfigPool` |
-| 12. Rendered config failure | `ocp_logs` (Ignition/systemd failure) | `Node` + `MachineConfigPool` |
+| 11. Configuration drift | `ocp_logs` (MCD diff log) | `Node` + `MachineConfigPool` + `MachineConfig` |
+| 12. Rendered config failure | `ocp_logs` (Ignition/systemd failure) | `Node` + `MachineConfigPool` + `MachineConfig` |
 | 13. OS pivot/reboot failure | `ocp_logs` (host journald) + `ocp_metrics` | `Node` + `MachineConfigPool` |
 | 14. Uncordon/drainer mismatch | `ocp_logs` (controller coordination) | `Node` (`desiredDrain` vs `lastAppliedDrain`) |
 | 15. Disk pressure exhaustion | `ocp_metrics` (`DiskPressure`) + `ocp_logs` | `Node` |
+| 16. CSI max volume limit | `ocp_logs` (scheduler log) + `ocp_metrics` | `VolumeAttachment` + `Node` + `Event` |
 
 ---
 

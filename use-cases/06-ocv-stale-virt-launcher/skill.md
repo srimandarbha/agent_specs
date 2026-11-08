@@ -1,118 +1,183 @@
-# Skill: Diagnose Stale source virt-launcher pod after completed migration
+# Skill: Fail-Proof Diagnosis for Stale Virt-Launcher Pod After Completed Migration (`06-ocv-stale-virt-launcher`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **stale source virt-launcher pod after completed migration**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get vmi <vmi> -n <namespace> -o wide
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` (cordoned), and MCO is draining the node. | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | MCC log reports drain timeout on a pod named `(?i)virt-launcher-.*` OR Kubelet logs report: `(?i)(waiting for pod.*virt-launcher.*to terminate|error draining node.*virt-launcher)` | Exit: `not_supported: no_virt_launcher_drain_error_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get vmim -n <namespace> -o wide
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Virt-Launcher Target]      [No Virt-Launcher Error]
+            Pod name, namespace, VM name from labels    ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Dual-Launcher & Migration Verification]
+            Scan KV Store for sibling pods with label vm.kubevirt.io/name
+                         │
+         ┌───────────────┴───────────────────────────────┐
+         ▼                                               ▼
+  [0 Replacement Pods on Target Node]           [Healthy Replacement Pod Found]
+  Live migration DID NOT succeed!               Active VM is running on target node!
+  ──► Handoff to 05-ocv-vm-not-migratable       Proceed to Step 3 (Causal Analysis)
+      (DO NOT DELETE POD!)                               │
+                         ┌───────────────────────────────┴───────────────────────────────┐
+                         ▼                                                               ▼
+            [Old Pod Stale / virt-handler Hang]                             [Dual Active Process Detected]
+            Migration Succeeded metric == 1;                                Both pods consuming CPU/memory;
+            old pod orphaned on source node.                                potential split-brain!
+            ──► Branch 3A: Orphaned Launcher                                ──► Branch 3B: Safety Halt
 ```
-```bash
-oc get pods -n <namespace> -o wide | grep virt-launcher
+
+### Step 1: Extract Blocker Pod & Identify Virtual Machine
+1. Extract `target_namespace`, `failing_pod_name`, and `draining_node` from the MCC log line:
+   ```regex
+   (?i)error when waiting for pod "(?<target_namespace>[^/]+)/(?<failing_pod_name>virt-launcher-[^"]+)" to terminate
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`:
+   * Confirm Pod label `kubevirt.io == "virt-launcher"`.
+   * Extract VM name from Pod label `vm.kubevirt.io/name`.
+
+### Step 2: Verify Active VM Status & Dual Pod State
+1. Query `k8s_objects` / KV Store for all Pods in `target_namespace` matching `metadata.labels['vm.kubevirt.io/name'] == vm_name`:
+   * **Case 2A: Exactly 1 pod found (the one on the draining node):**
+     * The VM has NOT migrated to another node. The live migration either failed, stalled, or was never initiated.
+     * **CRITICAL SAFETY ABORT:** **DO NOT DELETE THE POD.** Force-deleting this pod will crash the virtual machine and destroy customer workload state. Exit immediately to `use-cases/05-ocv-vm-not-migratable`.
+   * **Case 2B: Replacement pod found on a different node (`spec.nodeName != draining_node`):**
+     * Verify the replacement pod status: `status.phase == "Running"` and container condition `Ready == True`.
+     * Check Prometheus metric: `kubevirt_vmi_migration_status{status="succeeded", vmi="<vm_name>"}` == 1.
+     * If migration is proven succeeded and replacement launcher is healthy: Proceed to Step 3.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get pod <old-virt-launcher> -n <namespace> -o yaml
+                            [Stale Virt-Launcher on Draining Node]
+                                              │
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+    [Branch 3A: Orphaned Pod]       [Branch 3B: Dual-Active QEMU]   [Branch 3C: Local Storage Lock]
+    virt-handler failed to reap     Both pods active; split-brain   Old pod PVC lock not released
+    old launcher (RH Solution 7146943) risk on shared disk           by CSI driver
+              │                               │                               │
+              ▼                               ▼                               ▼
+    Playbook: cleanup_stale_virt_   Playbook: null (Data Risk)      Handoff: 04-storage-unmount
+    launcher (Graceful pod delete)  CLI Fallback: Emergency Audit   Resolve VolumeAttachment
 ```
-```bash
-oc describe pod <old-virt-launcher> -n <namespace>
+
+* **Branch 3A: Orphaned Source Virt-Launcher Pod (Red Hat Solution 7146943)**
+  * *Evidence:* Replacement launcher pod is active and running on the target node; Prometheus `kubevirt_vmi_migration_status` is `Succeeded`; the old launcher pod on `draining_node` has `phase != "Running"` or is stuck in `Terminating` with virt-handler logs in `ocp_logs` showing `failed to delete launcher pod: context deadline exceeded`.
+  * *Diagnosis:* Live migration completed 100% successfully, but virt-handler on the source node failed to reap the residual cgroup/pod container, causing MCC drainer to wait indefinitely on an orphaned pod shell.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_cleanup_stale_virt_launcher`**. (Safely deletes the orphaned source launcher pod, unblocking MCC drain).
+
+* **Branch 3B: Dual-Active / Split-Brain Safety Risk**
+  * *Evidence:* Both the source launcher and target launcher report active container processes or non-zero CPU metrics (`container_cpu_usage_seconds_total > 0`).
+  * *Diagnosis:* Live migration entered a split-brain or incomplete handoff state where the source VM process did not suspend.
+  * *Remediation Route:* **CRITICAL SAFETY HALT $\rightarrow$ Manual CLI Fallback Only.** Never delete either pod autonomously.
+
+* **Branch 3C: Storage / PVC VolumeAttachment Lock Retained**
+  * *Evidence:* Old launcher pod has finalizer `kubernetes.io/pvc-protection` or VolumeAttachment is still locked on `draining_node`.
+  * *Diagnosis:* Residual storage attachment preventing launcher pod cleanup.
+  * *Remediation Route:* **Handoff to `use-cases/04-storage-unmount-detach`**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_cleanup_stale_virt_launcher`)
+**Conditions for Match:**
+1. Branch 3A is satisfied (replacement pod is `Running` and `Ready` on target node; migration status is `Succeeded`).
+2. Target node is cordoned (`spec.unschedulable == true`).
+3. Source pod has been lingering for > 180s past migration completion timestamp.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_cleanup_stale_virt_launcher",
+  "playbook_file": "playbooks/remediate-stale-virt-launcher.yml",
+  "risk_level": "medium",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "vmi_namespace": "{{ target_namespace }}",
+    "vmi_name": "{{ vm_name }}",
+    "stale_pod_name": "{{ failing_pod_name }}",
+    "draining_node": "{{ node_name }}"
+  },
+  "verification_goal": "stale_pod_deleted == true and mcc_drain_resumed == true"
+}
 ```
-```bash
-oc describe node <old-node>
+
+---
+
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - Dual-Active / Safety Risk)
+**Triggered when:** Migration state is ambiguous or both pods report active processes.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Replacement pod not verified or dual-active VM process detected; requires human virtualization engineer verification.",
+  "manual_cli_fallback": {
+    "risk_level": "critical",
+    "pre_checks": [
+      "# 1. List all launcher pods for this virtual machine across all nodes:",
+      "oc get pods -n {{ target_namespace }} -l vm.kubevirt.io/name={{ vm_name }} -o wide",
+      "# 2. Inspect active VMI location and migration history:",
+      "oc -n {{ target_namespace }} get vmi {{ vm_name }} -o jsonpath='{.status.nodeName}{\"\\n\"}'",
+      "oc -n {{ target_namespace }} get vmim -l kubevirt.io/vmi-name={{ vm_name }} --sort-by=.metadata.creationTimestamp"
+    ],
+    "remediation_steps": [
+      "# 3. Verify that the VM is indeed answering network traffic on the target node.",
+      "# 4. Once target VM health is 100% verified, safely delete the stale source launcher pod:",
+      "oc -n {{ target_namespace }} delete pod {{ failing_pod_name }} --grace-period=30"
+    ],
+    "safety_warning": "Never delete a virt-launcher pod unless the replacement pod on another node is confirmed Running and serving traffic.",
+    "verification": [
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}",
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: Drain repeatedly times out on an old `virt-launcher` pod even though the VM is Running elsewhere and VMIM objects show Succeeded; old source pod remains NotReady or partially ready.
-5. Validate the primary cause using these evidence sources: VM current node, old launcher node and readiness, VMIM history, pod deletionTimestamp, container state, events, node health and virtualization operator version.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Confirm VMIM completion and that the active VMI is healthy on its current node. Capture relevant pod/VMI/VMIM YAML and virtualization logs, then follow the matching Red Hat solution or support guidance for the deployed version. Resolve the stale pod/node cleanup cause before considering deletion.
-8. Explain the operational risk: Never delete a launcher solely because it looks old; prove it is not the active VM process and follow supported cleanup guidance. This case has a documented Red Hat solution: https://access.redhat.com/solutions/7146943.
-9. Define verification using: Stale source pod is cleaned up using supported procedure, active VM remains healthy, and drain proceeds.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-## Kubernetes object observability requirements
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing Replacement Pod:** No replacement pod exists on another node. Report: `not_supported: vmi_migration_incomplete_route_to_05`.
+3. **Ambiguous Migration Metric:** Prometheus `kubevirt_vmi_migration_status` is missing or shows `Running` (migration in-flight). Report: `inconclusive: migration_still_in_progress`.
+4. **VMI Status Mismatch:** The VMI object reports `nodeName == draining_node`. Report: `not_supported: vm_still_homed_on_draining_node`.
 
-**Scenario:** Stale virt-launcher after completed migration
+---
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+## 6. Post-Remediation Verification Contract
 
-### Required object evidence
-- Pod (virt-launcher namespace/name/UID, nodeName, deletionTimestamp, phase, owner references)
-- VirtualMachineInstance (current node assignment, phase/conditions, launcher Pod reference)
-- VirtualMachineInstanceMigration (source/target nodes, phase, completion time, VMI reference)
-- Event (Pod/VMI/migration events)
-- Node (source and target readiness/schedulability)
+Whether executed via AAP playbook or manual CLI, recovery MUST be proven using these exact signals:
 
-### Correlation rule
-Compare migration completion time and target VMI node with the source launcher Pod identity and node. Correlate virt-handler, migration-controller and kubelet logs before classifying a Pod as stale.
-
-### Diagnosis gate
-A launcher Pod remaining visible is not sufficient. Confirm the migration completed, the VMI is healthy on the target, and the old Pod is no longer the valid launcher before recommending human-reviewed cleanup.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Stale virt-launcher after migration**. Verify migration object completion, source/destination VMI ownership, pod UID/node and timestamps before classifying a pod as stale. Never delete based only on age.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Orphan Pod Expiration:** The stale `virt-launcher` pod record is removed from `index=k8s_objects` / KV Store.
+2. **Active VM Integrity:** The replacement `virt-launcher` pod on the target node remains in `phase: Running` with zero restarts.
+3. **MCO Resumption:** `index=ocp_logs` records MCC progressing with node drain past the virtual machine pod.

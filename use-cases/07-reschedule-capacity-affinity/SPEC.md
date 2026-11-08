@@ -1,101 +1,58 @@
-# SPEC: Replacement workloads cannot schedule after eviction
+# SPEC: Replacement Workloads Cannot Schedule After Eviction (`07-reschedule-capacity-affinity`)
 
-## Problem statement
-The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **replacement workloads cannot schedule after eviction**, using evidence from the deployed cluster rather than assuming every `Updating` pool is a drain failure.
+## Problem Statement
+The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **replacement workloads unable to schedule after eviction**, isolate the exact scheduler constraint preventing pod placement (compute resource starvation, hard pod anti-affinity deadlock, or taint/topology zone mismatch), and generate an actionable manual CLI fallback runbook using evidence from Splunk without direct Kubernetes cluster mutation.
 
-## Trigger and scope
-- Lifecycle stage: **Post-eviction scheduling / rollout coordination**
-- Trigger signal: Drain evicts pods, but replacement pods stay Pending; events cite insufficient CPU/memory, taints, affinity, topology, node selector or volume topology.
-- In scope: read-only evidence gathering, causal classification, confidence reporting, recommended next step, and recovery verification.
-- Out of scope: autonomous disruptive changes, unsupported node mutation, or declaring an upgrade healthy based on one signal.
+## Trigger and Scope
+- **Lifecycle Stage:** **Post-Eviction Scheduling / Rollout Coordination**
+- **Trigger Signal:** Workload eviction succeeds on the cordoned node, but replacement pods remain stuck in `phase: Pending` AND scheduler events in `index=k8s_objects` match `FailedScheduling` with reasons:
+  `(?i)(0/\d+ nodes available|insufficient cpu|insufficient memory|pod anti-affinity rules unsatisfied|node\(s\) had untolerated taint|volume node affinity conflict)`.
+- **In Scope:** Read-only evidence gathering from unified Splunk multi-index search/KV store, scheduler constraint isolation, causal classification, remediation formulation (Manual CLI fallback with risk assessment), and recovery verification.
+- **Out of Scope:** Autonomous direct API mutation, force-deleting pods, deleting node taints, or modifying workload anti-affinity definitions without human approval.
 
-## Required evidence
-Pending pod events; requests/limits; node allocatable and pressure; affinity rules; taints; PVC topology; MCP maxUnavailable and number of ready nodes.
+## Required Telemetry Sources (Splunk Only)
+* `index=ocp_logs`: Scheduler denial logs and MCC rollout stall logs.
+* `index=k8s_objects` / KV Store:
+  * `Pod`: Pending replacement pods (`status.phase == "Pending"`, `spec.containers[*].resources.requests`, `spec.affinity.podAntiAffinity`, `spec.nodeSelector`, `spec.tolerations`).
+  * `Node`: Schedulable worker nodes (`status.allocatable`, `spec.taints`, `metadata.labels`, conditions `Ready: True`, `DiskPressure: False`, `MemoryPressure: False`).
+  * `Event`: `reason == "FailedScheduling"` with full message payload.
+  * `PodDisruptionBudget`: Associated workload PDBs reporting `status.disruptionsAllowed: 0`.
+* `index=ocp_metrics`:
+  * `kube_node_status_allocatable_cpu_cores`, `kube_node_status_allocatable_memory_bytes`.
+  * `node_cpu_utilization_ratio`, `node_memory_utilization_ratio`.
 
-## Diagnostic commands
-```bash
-oc get pods -A --field-selector=status.phase=Pending -o wide
-```
-```bash
-oc describe pod <pending-pod> -n <namespace>
-```
-```bash
-oc get nodes
-```
-```bash
-oc describe node <candidate-node>
-```
-```bash
-oc get mcp <pool> -o yaml
-```
-```bash
-oc get pdb -A
-```
+## Diagnostic Strategy
+1. **Perception:** Ingest unified Splunk dossier in a single round-trip (< 10s query, < 45s deadline).
+2. **Correlation:** Extract the pending pod, its owner reference, and the exact scheduler denial message from `Event` objects (`FailedScheduling`).
+3. **Causal Branching:**
+   - **Branch 3A (Capacity Starvation):** `Insufficient cpu` or `Insufficient memory` across all uncordoned nodes.
+   - **Branch 3B (Hard Anti-Affinity Deadlock):** Workload specifies hard anti-affinity (`requiredDuringSchedulingIgnoredDuringExecution`) and replica count $N \ge$ available schedulable nodes.
+   - **Branch 3C (Taint / Storage Topology Mismatch):** Untolerated worker/infra taints or single-AZ EBS/SAN volume affinity locking the pod to cordoned nodes.
 
-## Remediation guidance
-Restore node capacity or correct the precise scheduling constraint. Consider workload-owner-approved affinity changes or additional capacity. Respect pool availability constraints and avoid draining another node until workload recovery is verified.
+## Two-Tier Remediation Contract
+Scheduling constraints represent structural cluster capacity or application architectural decisions. Autonomous mutation is strictly prohibited.
+- **Ansible Playbook Catalog:** `playbook_match: null`. (No automated playbook is permitted to mutate workload affinities or alter infrastructure capacity autonomously).
+- **Targeted Manual CLI Fallback:**
+  - *Branch 3A (Capacity):* Guided SRE procedure to inspect cluster headroom (`oc adm top nodes`) and scale up worker MachineSets (`oc scale machineset/...`).
+  - *Branch 3B (Anti-Affinity):* Guided SRE procedure to coordinate with workload owners to temporarily convert hard anti-affinity to soft (`preferredDuringScheduling...`) or scale down replicas during maintenance windows.
+  - *Branch 3C (Taints/Topology):* Guided SRE procedure to verify node taints and storage volume topology spread.
 
-## Safety constraints
-Relaxing required anti-affinity or topology rules may violate application resilience assumptions. Do not scale down additional nodes to make the update appear to progress.
-- Never fabricate output or infer a cause from MCP status alone.
-- Record cluster version, timestamp, affected node, MCP, relevant namespace/pod and exact error.
-- If API connectivity or evidence is insufficient, stop and report the missing data rather than recommending destructive cleanup.
-- Mutation requires explicit human approval, change record, bounded scope, rollback plan and post-change validation.
+## Safety Constraints
+> [!CAUTION]
+> The diagnostic agent MUST NEVER autonomously patch `spec.affinity`, remove node taints, or delete storage volume attachments. Hard anti-affinity rules prevent split-brain and single-point-of-failure outages for mission-critical databases and microservices.
 
-## Success criteria
-Required replicas schedule and become Ready on eligible nodes; PDBs are healthy and MCP proceeds within the configured disruption budget.
+## Success Criteria
+1. Target replacement pods transition from `phase: Pending` to `phase: Running` and report `Ready: True`.
+2. Workload PDB reports `status.disruptionsAllowed > 0`.
+3. Subsequent nodes in the MachineConfigPool proceed with drain and rollout without blocking.
 
-## Acceptance tests
-1. Given the trigger signal and supporting evidence, the agent identifies this use case or explicitly reports ambiguity.
-2. The agent returns evidence references and distinguishes observed facts from hypotheses.
-3. The agent recommends read-only checks before any mutation.
-4. The agent does not execute a high-risk action without approval.
-5. The agent verifies the stated success criteria after remediation.
+---
 
+## Agent Graph Integration Contract
 
-## Kubernetes object observability requirements
+This use case is invoked by the shared 10-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`.
 
-**Scenario:** Replacement workload cannot schedule
-
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
-
-### Required object evidence
-- Pod (nodeName, nodeSelector, affinity/anti-affinity, tolerations, resource requests/limits, ownerReferences, phase/conditions)
-- Node (allocatable/capacity, taints, labels, readiness, pressure)
-- Deployment/ReplicaSet/StatefulSet/DaemonSet (selector and desired/ready/available replicas)
-- Event (FailedScheduling and scheduling reason/message)
-- ResourceQuota (hard/used values when quota is suspected)
-- PDB (context for disruption constraints)
-
-### Correlation rule
-Link the evicted Pod to its owner and replacement Pod(s); compare scheduling event reasons with node labels/taints/allocatable capacity, affinity rules and quota at the same time.
-
-### Diagnosis gate
-Do not diagnose capacity shortage from a Pending phase alone. Require scheduler event/reason or equivalent metrics and show which constraint is unsatisfied. Distinguish hard affinity from preferred affinity.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Case-specific diagnosis gate
-
-**Replacement scheduling failure:** Inspect Pending pod events, requests, node allocatable/taints, selectors, affinity/anti-affinity and topology constraints. Distinguish capacity from constraints.
-
-Acceptance criteria: (1) correct cluster and lifecycle scope are validated; (2) diagnosis references time-bounded evidence IDs; (3) missing or stale data yields an explicit unknown/inconclusive outcome; (4) no mutation tool is called; (5) the report distinguishes observed facts, hypotheses, contradictions and recommendations.
+### Bounded Execution
+* Investigation Deadline: 45 seconds.
+* Tool Budget: Max 2 Splunk tool calls per investigation.
+* Output: Structured report with evidence citations, causal classification, and human SRE manual CLI fallback.

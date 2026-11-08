@@ -1,89 +1,63 @@
-# Implementation plan: Stale source virt-launcher pod after completed migration
+# Implementation Plan: Stale Source Virt-Launcher Pod After Completed Migration
 
-## Phase 0: Ground truth
-- [ ] Pin the supported OpenShift release(s) and obtain the matching MCO source/runbook revision.
-- [ ] Define the log/event/object fields that identify this case: Drain repeatedly times out on an old `virt-launcher` pod even though the VM is Running elsewhere and VMIM objects show Succeeded; old source pod remains NotReady or partially ready.
-- [ ] Capture sanitized examples from a test cluster or incident archive.
-- [ ] Document known false positives and required evidence gaps.
+## Phase 0: Ground Truth & Telemetry Alignment
+- [ ] Pin supported OpenShift release(s) and obtain matching MCO source/runbook revision.
+- [ ] Align trigger signals in Splunk: MCC log contains `error when waiting for pod ... virt-launcher.*to terminate`.
+- [ ] Confirm `index=ocp_logs`, `index=k8s_objects` (with `managedFields` stripped), and `index=ocp_metrics` are populated.
+- [ ] Verify that Pod objects (with `vm.kubevirt.io/name` labels) and Nodes are cached in the Splunk KV Store (`k8s_live_inventory_lookup`) for instant retrieval.
 
-## Phase 1: Read-only evidence tools
-- [ ] Implement a scoped MCO log query for the affected node and incident window.
-- [ ] Implement object reads for the resources named in the diagnostic commands.
-- [ ] Normalize timestamps, namespace/name, node identity and resource versions.
-- [ ] Redact secrets and high-risk payload fields.
+## Phase 1: Read-Only Evidence Tooling
+- [ ] Implement the parameterized **Unified Multi-Index Splunk Search** (`query_unified_splunk_dossier`).
+- [ ] Bound search time: `earliest=-1h latest=now` for logs/metrics; `earliest=-24h` for objects (or instant KV Store lookup).
+- [ ] Normalize timestamps, cluster ID, VM name, and launcher pod names into structured state.
+- [ ] Redact secrets, authorization headers, and environment variables.
 
-## Phase 2: Reasoning and classification
-- [ ] Add the case trigger and counter-evidence checks.
-- [ ] Require lifecycle-stage classification before assigning a root cause.
-- [ ] Return supporting evidence, contradictions, confidence and missing data.
-- [ ] Distinguish one-node symptoms from cluster-wide API/control-plane symptoms.
+## Phase 2: Causal Reasoning & Classification
+- [ ] Extract failing pod and namespace from MCC log.
+- [ ] Extract VM name from pod labels (`vm.kubevirt.io/name`).
+- [ ] Query for all launcher pods belonging to that VM across the cluster.
+- [ ] **Multi-level Root Cause Analysis:**
+  - Is there a replacement launcher pod running on a different node in `phase: Running`?
+  - Does Prometheus metric `kubevirt_vmi_migration_status{status="succeeded"}` confirm completed migration?
+  - Check for dual-active CPU consumption (split-brain danger).
+  - If no replacement pod is found, route immediately to `05-ocv-vm-not-migratable`.
 
-## Phase 3: Recommendations and approval
-- [ ] Encode the safe remediation path: Confirm VMIM completion and that the active VMI is healthy on its current node. Capture relevant pod/VMI/VMIM YAML and virtualization logs, then follow the matching Red Hat solution or support guidance for the deployed version. Resolve the stale pod/node cleanup cause before considering deletion.
-- [ ] Mark risk and approval requirements: Never delete a launcher solely because it looks old; prove it is not the active VM process and follow supported cleanup guidance. This case has a documented Red Hat solution: https://access.redhat.com/solutions/7146943.
-- [ ] Keep all mutation tools disabled in the first release.
-- [ ] If approved remediation is later added, require explicit approval, audit record, rollback and post-checks.
+## Phase 3: Two-Tier Remediation & Playbook Matching
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+  - If replacement pod is healthy on target node and migration succeeded:
+    - Match `playbook_cleanup_stale_virt_launcher`.
+    - Generate `aap_extra_vars`: `{ target_cluster, vmi_namespace, vmi_name, stale_pod_name, draining_node }`.
+    - Mark risk as `medium` and require human approval before execution.
+- [ ] **Intelligent CLI Fallback:** If migration status is ambiguous or dual-active risk detected:
+  - Explicitly set `playbook_match: null`.
+  - Output targeted manual `oc` CLI runbook:
+    ```bash
+    # 1. Verify VM migration status
+    oc get vmi <vm_name> -n <namespace> -o wide
+    # 2. Check both launcher pods
+    oc get pods -n <namespace> -l vm.kubevirt.io/name=<vm_name> -o wide
+    # 3. Only delete stale pod after confirming traffic on target node
+    oc delete pod <stale_pod_name> -n <namespace> --grace-period=30
+    ```
+- [ ] Keep all mutation tools disabled inside the agent; hand off execution to AAP or human SRE.
 
-## Phase 4: Verification and tests
-- [ ] Unit tests: matching trigger, non-matching trigger, incomplete evidence and contradictory evidence.
-- [ ] Integration test: gather logs and resource state using least-privilege RBAC.
-- [ ] Safety test: agent refuses unapproved destructive action.
-- [ ] Recovery test: verify `Stale source pod is cleaned up using supported procedure, active VM remains healthy, and drain proceeds.`
-- [ ] Regression test: ensure generic `MCP Updating` alone does not trigger this diagnosis.
+## Phase 4: Verification & Acceptance Tests
+- [ ] Unit tests: matching trigger, non-matching trigger, incomplete evidence, and contradictory evidence.
+- [ ] Graph test: single multi-index query completes within 10s; graph completes within 45s deadline.
+- [ ] Playbook matching test: confirmed stale launcher produces exact `aap_extra_vars` matching schema.
+- [ ] Fallback test: un-migrated VM launcher correctly routes to 05 and strictly refuses pod deletion.
+- [ ] Post-remediation verification: Stale launcher removed, replacement launcher remains running, and MCC resumes drain.
 
-## Release gates
-- No critical safety test failures.
-- No unbounded loops or retries.
-- Evidence is reproducible and source-linked.
-- A human reviewer can follow the diagnosis without trusting an opaque score.
+---
 
+## Observability & Graph Integration Contract
 
-## Kubernetes object observability requirements
+### Required Telemetry Sources (Splunk Only)
+* `index=ocp_logs`: Machine Config Controller drain logs, virt-handler logs.
+* `index=k8s_objects` / KV Store: `Pod` (labels, phase, node assignment), `Node` (cordon status).
+* `index=ocp_metrics`: `kubevirt_vmi_migration_status{status="succeeded"}`, `kubevirt_vmi_phase_count`.
 
-**Scenario:** Stale virt-launcher after completed migration
-
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
-
-### Required object evidence
-- Pod (virt-launcher namespace/name/UID, nodeName, deletionTimestamp, phase, owner references)
-- VirtualMachineInstance (current node assignment, phase/conditions, launcher Pod reference)
-- VirtualMachineInstanceMigration (source/target nodes, phase, completion time, VMI reference)
-- Event (Pod/VMI/migration events)
-- Node (source and target readiness/schedulability)
-
-### Correlation rule
-Compare migration completion time and target VMI node with the source launcher Pod identity and node. Correlate virt-handler, migration-controller and kubelet logs before classifying a Pod as stale.
-
-### Diagnosis gate
-A launcher Pod remaining visible is not sufficient. Confirm the migration completed, the VMI is healthy on the target, and the old Pod is no longer the valid launcher before recommending human-reviewed cleanup.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Delivery tasks and tests
-
-1. Map this case to actual Splunk/Prometheus/Kubernetes tool names and schemas; do not invent connector APIs.
-2. Implement typed evidence adapters and query bounds.
-3. Add positive, negative, stale-evidence, wrong-cluster, tool-timeout and permission-denied fixtures.
-4. Assert expected diagnosis and that no mutation capability is present.
-5. Validate on synthetic fixtures, then read-only staging; record OpenShift release tested.
-
-Case-specific test gate: Verify migration object completion, source/destination VMI ownership, pod UID/node and timestamps before classifying a pod as stale. Never delete based only on age.
+### Bounded Execution
+* Max 2 Splunk tool calls total per investigation.
+* 15-second per-query timeout; 45-second overall investigation deadline.
+* Stop as `inconclusive` if cluster identity is ambiguous or required telemetry is unavailable.

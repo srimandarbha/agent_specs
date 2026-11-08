@@ -1,115 +1,207 @@
-# Skill: Diagnose Node becomes NotReady or kubelet/CRI-O cannot finish drain
+# Skill: Fail-Proof Diagnosis for Node NotReady or Kubelet/CRI-O Unreachable (`08-node-kubelet-crio-unreachable`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **node becomes notready or kubelet/cri-o cannot finish drain**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc describe node <node>
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | MachineConfigPool is `Updating`, and target node is undergoing drain or configuration rollout. | Exit: `inconclusive: lifecycle_stage_not_updating` |
+| **Trigger Signal** | Target Node condition `Ready` is `False` or `Unknown` OR MCC logs match: `(?i)(node.*is not ready|error draining node.*node is not ready|kubelet stopped posting node status|lease.*renewTime.*stale)` | Exit: `not_supported: node_is_ready_and_responsive` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get lease -n kube-node-lease <node> -o yaml
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Node & Lease State]          [Node Condition Ready == True]
+            Node name, Ready condition, lease age         ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Differentiate Control Plane vs Host Runtime]
+            Evaluate Kubelet logs, CRI-O service, and network heartbeat
+                         │
+         ┌───────────────┼───────────────────────────────┐
+         ▼               ▼                               ▼
+  [Kubelet Crash/Unit]   [Kubelet TLS / CSR Failure]     [Complete Host Silence]
+  CRI-O / Kubelet unit   x509 cert expired or            No host logs in 15m,
+  inactive/failed        CSR pending approval            hardware/hypervisor down
+         │                       │                               │
+         ▼                       ▼                               ▼
+  Branch 3A: Systemd     Branch 3B: Cert Renewal         Branch 3C: Host Fencing
+  Service Crash          (Manual CLI CSR approval)       (Manual CLI Out-of-band)
 ```
-```bash
-oc get pods -A --field-selector spec.nodeName=<node> -o wide
+
+### Step 1: Extract Node Condition & Heartbeat Freshness
+1. In `k8s_objects` / KV Store, inspect the `Node` object:
+   * Evaluate `status.conditions[?(@.type=="Ready")]`:
+     * If `status == "True"`: The node is healthy. Exit to `not_supported: node_is_ready_and_responsive`.
+     * If `status == "False"` or `"Unknown"`: Record `lastTransitionTime` and `message` (e.g. `Kubelet stopped posting node status`).
+2. Inspect Prometheus metric in `index=ocp_metrics`:
+   * `up{job="kubelet", instance="<target_node>"}`:
+     * If `0`: Kubelet metric endpoint unreachable.
+     * If `1`: Kubelet process is running but cannot register or update node lease.
+
+### Step 2: Correlate Host Journal Logs & Systemd Service States
+1. Query `index=ocp_logs` for node journal logs from the target node:
+   * Filter for unit messages: `systemd[1]: Unit crio.service entered failed state` or `kubelet.service: Main process exited`.
+   * Filter for TLS/CSR errors: `(?i)(x509: certificate has expired|certificate signed by unknown authority|bootstrap tokens)`.
+   * Check for disk space exhaustion on `/var`: `(?i)(no space left on device|eviction manager: disk pressure)`.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc adm node-logs <node> --path=journal
+                                [Node Unreachable / NotReady]
+                                              │
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+    [Branch 3A: CRI-O Unit Failure]  [Branch 3B: Kubelet TLS/CSR]   [Branch 3C: Host Hardware Drop]
+    crio.service crashed or hung     Client certificate expired     Total power loss or hypervisor
+    Host alive, journal intact       CSR pending admin approval     freeze; split-brain risk!
+              │                               │                               │
+              ▼                               ▼                               ▼
+    Playbook: restart_systemd_unit   Playbook: null (Security Risk) Playbook: null (Split-Brain Risk)
+    AAP Extra Vars: service: crio    CLI Fallback: oc adm cert      CLI Fallback: IPMI / Console
 ```
-```bash
-oc get events -A --sort-by=.lastTimestamp
+
+* **Branch 3A: CRI-O / Container Engine Unit Failure (Recoverable Daemon Crash)**
+  * *Evidence:* Host is active on the network and emitting systemd journal logs to Splunk, but `crio.service` reports `ActiveState=failed` or `SIGSEGV` due to deadlocked runtime storage locks or memory exhaustion. Kubelet transitions to `NotReady` with message: `container runtime is down`.
+  * *Diagnosis:* CRI-O daemon crashed while host OS and networking remain healthy. Restarting the systemd service clears the transient deadlock.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_restart_failed_systemd_unit`** with `systemd_service_name: "crio"`.
+
+* **Branch 3B: Kubelet Client TLS Certificate Expiration or Pending CSR**
+  * *Evidence:* Kubelet logs report `Failed to connect to apiserver: x509: certificate has expired` or `Unauthorized`. Cluster contains pending CSRs in `index=k8s_objects` matching the target node (`system:node:<node-name>`).
+  * *Diagnosis:* Kubelet rotation certificate renewal failed during drain or expired before node finished updating. Kubelet is blocked from authenticating to the kube-apiserver.
+  * *Remediation Route:* **DO NOT restart systemd blindly.** Route to **Manual CLI Fallback** for CSR inspection and certificate re-approval.
+
+* **Branch 3C: Complete Host Hardware / Hypervisor / Network Isolation (Kernel Panic or Power Loss)**
+  * *Evidence:* Zero log entries from the node across any subsystem for > 10 minutes. `kube-node-lease` expired > 300s. Ping and SSH fail. Hypervisor / IPMI alerts report VM powered off or kernel panic.
+  * *Diagnosis:* Hard host crash or physical network partition.
+  * *Remediation Route:* **CRITICAL SAFETY HALT $\rightarrow$ Manual CLI Fallback Only.**
+  * *Safety Warning:* NEVER execute `oc delete node` or force-delete pods while physical power state is unverified. If the host is merely partitioned, writing processes are still active on SAN/CSI storage.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_restart_failed_systemd_unit`)
+**Conditions for Match:**
+1. Branch 3A is satisfied (`crio.service` or allowlisted auxiliary unit in failed state).
+2. Host is network reachable and logging to Splunk.
+3. Node is cordoned (`spec.unschedulable == true`).
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_restart_failed_systemd_unit",
+  "playbook_file": "playbooks/remediate-restart-systemd-unit.yml",
+  "risk_level": "medium",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "target_node": "{{ node_name }}",
+    "systemd_service_name": "crio"
+  },
+  "verification_goal": "node_condition_ready == 'True' and systemd_unit_active == true"
+}
 ```
-4. Compare observations against the expected signal: Node NotReady/Unknown, kubelet heartbeat or lease stale, pod state does not converge, container runtime errors, or API operations time out against one node.
-5. Validate the primary cause using these evidence sources: Node conditions and lease; kubelet/CRI-O logs; system journal; disk/inode pressure; API reachability; last transition time; machine/console health.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Establish whether the host is reachable and whether API connectivity, kubelet, CRI-O, disk or hardware is the failure. Use approved node-level recovery and platform runbooks. If host logs cannot be collected through the API, use the supported out-of-band console path.
-8. Explain the operational risk: Do not assume force-deleting pods means processes stopped on an unreachable host. Avoid repeated reboots or node deletion until workload/storage ownership and recovery strategy are known.
-9. Define verification using: Node returns Ready, kubelet/runtime state is healthy, pods converge, and the MCO lifecycle can safely continue.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - Kubelet TLS / CSR)
+**Triggered when:** Kubelet client certificate is expired or CSR is pending.
 
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Kubelet client certificate expired or unapproved; requires manual CSR validation.",
+  "manual_cli_fallback": {
+    "risk_level": "medium",
+    "pre_checks": [
+      "# 1. Check for pending CSRs matching the affected node:",
+      "oc get csr | grep -Ei '{{ node_name }}|Pending'",
+      "# 2. Inspect node certificate expiration dates via host log:",
+      "oc adm node-logs {{ node_name }} --path=journal | grep -Ei 'x509|certificate' | tail -n 20"
+    ],
+    "remediation_steps": [
+      "# 3. Review and approve legitimate pending node renewal CSRs:",
+      "oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{\"\\n\"}}{{end}}{{end}}' | xargs -r oc adm certificate approve",
+      "# 4. If Kubelet needs restart after certificate renewal:",
+      "oc debug node/{{ node_name }} -- chroot /host systemctl restart kubelet"
+    ],
+    "safety_warning": "Verify the CSR requester identity (system:node:<node_name>) before approving to prevent rogue node registration.",
+    "verification": [
+      "oc get node {{ node_name }} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'",
+      "oc get lease -n kube-node-lease {{ node_name }}"
+    ]
+  }
+}
+```
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** Node, kubelet or CRI-O unreachable
+### Rule 3: Manual CLI Fallback Generation (Branch 3C - Hardware / Fencing)
+**Triggered when:** Node is completely unresponsive (dead host / power loss).
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Host unresponsive across network; hardware failure or fencing required.",
+  "manual_cli_fallback": {
+    "risk_level": "critical",
+    "pre_checks": [
+      "# 1. Verify node lease and time of last heartbeat:",
+      "oc get lease -n kube-node-lease {{ node_name }} -o yaml",
+      "# 2. Check out-of-band console / IPMI / Hypervisor state:",
+      "ipmitool -H {{ bmc_ip }} -U {{ bmc_user }} power status"
+    ],
+    "remediation_steps": [
+      "# 3. Power-cycle the physical host or restart VM via hypervisor console.",
+      "# 4. CRITICAL: NEVER run 'oc delete pod --force' until host power-off is 100% verified!",
+      "# 5. Once power is restored, verify node returns to Ready before continuing MCO update."
+    ],
+    "safety_warning": "Force-deleting pods or VolumeAttachments without hardware fencing will cause silent multi-attach SAN filesystem corruption.",
+    "verification": [
+      "oc get node {{ node_name }} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'"
+    ]
+  }
+}
+```
 
-### Required object evidence
-- Node (Ready/pressure conditions, transition times, taints, unschedulable, resourceVersion)
-- Lease in kube-node-lease namespace (holderIdentity, renewTime, leaseDurationSeconds)
-- Event (node condition and pod lifecycle events)
-- Pods on affected node (phase, deletionTimestamp, nodeName)
-- MCP (only if node issue intersects rollout state)
+---
 
-### Correlation rule
-Correlate Node condition transitions and Lease renewals with kubelet/CRI-O/MCC logs and Prometheus signals. Missing or stale Lease updates need time-aligned corroboration.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-### Diagnosis gate
-Do not conclude a node is unreachable from an old snapshot alone. Require stale lease/NotReady transitions or explicit runtime/API errors, with telemetry freshness and cluster identity checked.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Ambiguous Heartbeat Delay:** Node lease was renewed 15 seconds ago, but node conditions haven't caught up. Report: `inconclusive: heartbeat_transition_in_progress`.
+3. **Cluster-Wide API Server Degradation:** Multiple nodes across all pools suddenly report `Unknown` simultaneously (global control plane failure, not a node issue). Report: `inconclusive: cluster_wide_apiserver_degradation_detected`.
+4. **Host Fencing Uncertainty:** Host power state cannot be confirmed from telemetry. Prohibit autonomous recovery.
 
-## Agent graph integration contract (shared)
+---
 
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
+## 6. Post-Remediation Verification Contract
 
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
+Whether executed via AAP playbook or manual CLI, recovery MUST be proven using these exact signals:
 
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Node/kubelet/CRI-O unreachable**. Correlate Node conditions, heartbeat/lease age, kubelet/CRI-O logs and telemetry freshness. Unreachable node means process termination cannot be inferred from pod deletion.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Node Condition Restored:** `node.status.conditions[?(@.type=="Ready")].status == "True"`.
+2. **Lease Renewal Fresh:** `kube-node-lease` for the node reports `renewTime` within the last 40 seconds.
+3. **MCO Resumption:** `index=ocp_logs` records MCC resuming drain or MachineConfigDaemon applying updates on the restored node.

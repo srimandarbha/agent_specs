@@ -1,117 +1,196 @@
-# Skill: Diagnose API server or etcd latency prevents drain progress
+# Skill: Fail-Proof Diagnosis for API Server or ETCD Latency Blocking Drain (`09-api-etcd-latency`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **api server or etcd latency prevents drain progress**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get co kube-apiserver etcd machine-config
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | MachineConfigPool update is active or MCO operations are stalling across multiple nodes. | Exit: `inconclusive: lifecycle_stage_not_updating` |
+| **Trigger Signal** | MCC or operator logs match: `(?i)(context deadline exceeded|etcdserver: request timed out|etcdserver: leader changed|apiserver.*timeout|Client\.Timeout exceeded while awaiting headers)` OR Prometheus metrics report `etcd_disk_wal_fsync_duration_seconds{quantile="0.99"} > 0.01` OR ClusterOperator `etcd` or `kube-apiserver` condition `Degraded` is `True`. | Exit: `not_supported: control_plane_latency_within_thresholds` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc describe co kube-apiserver
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Check Control Plane Metrics]         [Control Plane Healthy]
+            etcd fsync, apiserver latency, CO status      ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Differentiate Storage vs DB vs Webhook]
+            Evaluate WAL fsync, DB quota, and API saturation
+                         │
+         ┌───────────────┼───────────────────────────────┐
+         ▼               ▼                               ▼
+  [WAL fsync > 10ms]     [DB Size > 6GB / Quota]         [API Webhook Saturation]
+  etcd disk write I/O    Database fragmentation or       etcd disk is fast (<5ms);
+  latency on master host space exhaustion                Admission webhook delay
+         │                       │                               │
+         ▼                       ▼                               ▼
+  Branch 3A: Disk I/O    Branch 3B: ETCD Defrag          Branch 3C: Webhook / APF
+  Bottleneck             Runbook Required                Saturation
 ```
-```bash
-oc describe co etcd
+
+### Step 1: Check Control Plane Metrics & Cluster-Wide Scope
+1. Query `index=ocp_metrics` for etcd performance indicators:
+   * `etcd_disk_wal_fsync_duration_seconds{quantile="0.99"}`:
+     * If `> 0.01s` (10ms): Master host storage cannot flush write-ahead logs fast enough.
+   * `etcd_disk_backend_commit_duration_seconds{quantile="0.99"}`:
+     * If `> 0.025s` (25ms): Backend B-tree commit delays detected.
+   * `etcd_mvcc_db_total_size_in_bytes`:
+     * If `> 6442450944` (> 6GB towards 8GB limit): Database approaching storage quota.
+2. Query `index=ocp_logs` for MCC controller logs:
+   * Determine error distribution: Are API timeouts occurring on only one node, or spanning multiple worker nodes and namespaces?
+   * If errors affect multiple unrelated worker nodes simultaneously, confirm **Cluster Control Plane Incident**.
+
+### Step 2: Differentiate etcd Disk vs. Database Fragmentation vs. Webhook Latency
+1. **Case 2A: etcd Disk WAL fsync Latency:**
+   * If WAL fsync 99th percentile > 10ms or etcd logs report:
+     ```regex
+     (?i)took too long \((?<latency_ms>\d+)ms\) to execute disk fsync
+     ```
+   * Proceed to **Branch 3A**.
+2. **Case 2B: etcd Database Space Quota / Fragmentation:**
+   * If etcd logs report `database space exceeded` or metric `etcdDatabaseQuotaLowSpace` is firing:
+   * Proceed to **Branch 3B**.
+3. **Case 2C: API Server Saturation / Mutating Webhook Deadlock:**
+   * If etcd disk latency is low (< 5ms), but `apiserver_request_duration_seconds{subresource="eviction"}` > 5s with admission webhook errors:
+   * Proceed to **Branch 3C**.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get --raw='/readyz?verbose'
+                              [Control Plane Latency Block]
+                                            │
+              ┌─────────────────────────────┼─────────────────────────────┐
+              ▼                             ▼                             ▼
+    [Branch 3A: Disk fsync]       [Branch 3B: DB Fragmentation] [Branch 3C: Webhook Saturation]
+    Master node NVMe/SAN latency  etcd DB approaching 8GB       Slow admission webhook or
+    stalls raft consensus writes  quota; defrag required        FlowSchema APF throttling
+              │                             │                             │
+              ▼                             ▼                             ▼
+    Playbook: null (Hardware)     Playbook: null (Risk)         Playbook: null (API Policy)
+    CLI Fallback: Master Storage  CLI Fallback: etcdctl defrag  CLI Fallback: Webhook Triage
 ```
-```bash
-oc get events -A --sort-by=.lastTimestamp
+
+* **Branch 3A: Master Node Disk I/O / WAL fsync Latency**
+  * *Evidence:* `etcd_disk_wal_fsync_duration_seconds{quantile="0.99"} > 0.01s`; etcd logs show repeated warnings: `took too long ... to execute disk fsync`. MCC drain operations time out waiting for annotation updates.
+  * *Diagnosis:* Underlying storage backing the master nodes (SAN, VM datastore, or local disk) cannot deliver sustained < 10ms fsync performance required for Raft consensus.
+  * *Remediation Route:* **DO NOT troubleshoot individual worker nodes.** Route to **Manual CLI Fallback (Master Storage & IOPS Audit)**.
+
+* **Branch 3B: etcd Database Space Exhaustion / Fragmentation**
+  * *Evidence:* etcd database size exceeds 6GB (approaching 8GB hard limit); alert `etcdDatabaseQuotaLowSpace` is active; etcd logs show slow bbolt compaction.
+  * *Diagnosis:* Excessive historical object churn without compaction has inflated the etcd database, resulting in slow range queries and API timeouts during eviction requests.
+  * *Remediation Route:* **Manual CLI Fallback (Sequential etcd defragmentation runbook)**.
+
+* **Branch 3C: Kube-Apiserver Saturation / Mutating Admission Webhook Delay**
+  * *Evidence:* etcd disk metrics are healthy (< 5ms), but eviction subresource calls time out; API server logs report mutating webhook timeouts on eviction admission.
+  * *Diagnosis:* A third-party security or governance webhook is intercepting eviction requests and failing or timing out.
+  * *Remediation Route:* **Manual CLI Fallback (Admission Webhook Triage)**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Absolute Safety Rule on Control Plane Components
+> [!CAUTION]
+> The diagnostic agent MUST NEVER execute autonomous playbooks to restart etcd pods, remove etcd cluster members, or run automated defragmentation. Control-plane mutations can cause quorum loss, leading to catastrophic multi-cluster failure. Remediation must be executed by certified platform engineers following supported Red Hat runbooks.
+
+### Rule 1: Manual CLI Fallback Generation (Branch 3A - Master Storage Latency)
+**Triggered when:** etcd WAL fsync exceeds 10ms.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "etcd disk fsync latency exceeds 10ms threshold; control-plane storage saturation confirmed.",
+  "manual_cli_fallback": {
+    "risk_level": "critical",
+    "pre_checks": [
+      "# 1. Check etcd cluster operator status:",
+      "oc get co etcd -o yaml",
+      "# 2. Inspect etcd member endpoint health and fsync latency:",
+      "oc -n openshift-etcd rsh -c etcd $(oc -n openshift-etcd get pods -l app=etcd -o jsonpath='{.items[0].metadata.name}') etcdctl endpoint status -w table"
+    ],
+    "remediation_steps": [
+      "# 3. Inspect master node underlying disk latency (fio / iostat):",
+      "oc debug node/{{ master_node }} -- chroot /host iostat -xz 1 5",
+      "# 4. Check for noisy neighbor workloads or SAN storage throttling on control-plane hosts.",
+      "# 5. Once storage latency drops < 10ms, MCO drain operations will automatically succeed."
+    ],
+    "safety_warning": "Do not restart etcd pods or reboot master nodes while etcd is experiencing high latency without quorum validation.",
+    "verification": [
+      "oc get co etcd -o jsonpath='{.status.conditions[?(@.type==\"Degraded\")].status}'"
+    ]
+  }
+}
 ```
-```bash
-oc -n openshift-machine-config-operator logs <controller-pod> -c machine-config-controller --since=30m
+
+---
+
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - Database Defragmentation)
+**Triggered when:** etcd database size approaches quota limit.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "etcd database approaching quota limit; fragmentation blocking API write throughput.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Check etcd database physical size vs quota across all members:",
+      "oc -n openshift-etcd rsh -c etcd $(oc -n openshift-etcd get pods -l app=etcd -o jsonpath='{.items[0].metadata.name}') etcdctl endpoint status -w table"
+    ],
+    "remediation_steps": [
+      "# 2. Run sequential defragmentation one member at a time (wait 1 minute between nodes):",
+      "for pod in $(oc -n openshift-etcd get pods -l app=etcd -o jsonpath='{.items[*].metadata.name}'); do",
+      "  echo \"Defragmenting $pod...\";",
+      "  oc -n openshift-etcd rsh -c etcd $pod etcdctl defrag;",
+      "  sleep 60;",
+      "done",
+      "# 3. Verify database size reduced across all endpoints:",
+      "oc -n openshift-etcd rsh -c etcd $(oc -n openshift-etcd get pods -l app=etcd -o jsonpath='{.items[0].metadata.name}') etcdctl endpoint status -w table"
+    ],
+    "safety_warning": "Never defragment all etcd members simultaneously; defragmentation locks the B-tree for the duration of the run.",
+    "verification": [
+      "oc get co etcd -o jsonpath='{.status.conditions[?(@.type==\"Degraded\")].status}'"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: Multiple unrelated drain operations show timeouts, `context deadline exceeded`, request throttling, API errors, or webhook failures that correlate with API instability.
-5. Validate the primary cause using these evidence sources: ClusterOperator kube-apiserver/etcd conditions, API request errors, etcd alerts, latency metrics, controller logs across nodes, event write failures.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Treat as a control-plane incident. Follow API-server/etcd runbooks, restore control-plane health, then re-evaluate the drain. Avoid changing PDBs or deleting pods when API failures are broad and the specific blocker is not established.
-8. Explain the operational risk: Control-plane remediation is high impact. Do not restart control-plane components or alter etcd membership based only on drain symptoms.
-9. Define verification using: API readiness and latency recover, requests succeed consistently, and the same drain request progresses without broad timeouts.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-## Kubernetes object observability requirements
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Single-Node Isolated Timeout:** MCC logs report a single transient API timeout on node-1, but etcd disk latency is < 2ms, ClusterOperators are healthy, and all other nodes update cleanly. Report: `not_supported: isolated_transient_timeout_not_systemic_control_plane_failure`.
+3. **Master Pool Updating:** If master nodes themselves are undergoing MCO reboot, temporary API pauses are expected. Report: `inconclusive: master_pool_rollout_in_progress`.
 
-**Scenario:** API server or etcd latency
+---
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+## 6. Post-Remediation Verification Contract
 
-### Required object evidence
-- Event (API-related object errors where recorded; event time and involved object)
-- Node and Lease snapshots only when node heartbeats are affected
-- MCP/Node state for stalled rollout context
-- ClusterOperator conditions and ClusterVersion status when available and relevant
+Whether storage latency recovers or defragmentation is performed, recovery MUST be proven using these exact signals:
 
-### Correlation rule
-Logs and Prometheus are primary. Use object snapshots only to show correlated symptoms such as delayed node conditions, stale leases or rollout stagnation. Object state alone cannot establish API/etcd latency.
-
-### Diagnosis gate
-Require latency/error metrics or explicit API-server/etcd logs. A stale object, missing Event, or unchanged MCP status alone does not prove API/etcd latency.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **API/etcd latency**. Use apiserver/etcd latency, errors, saturation and control-plane logs around the drain window. Avoid attributing a single timeout to etcd without corroboration.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **etcd Metric Normalized:** `etcd_disk_wal_fsync_duration_seconds{quantile="0.99"} <= 0.01s`.
+2. **ClusterOperators Available:** `kube-apiserver` and `etcd` report `Available: True`, `Degraded: False`.
+3. **MCO Drain Resumes:** `index=ocp_logs` records MCC successfully evicting pods without deadline exceeded errors.

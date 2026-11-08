@@ -1,0 +1,54 @@
+{
+  "investigation_status": "completed",
+  "classification": "supported",
+  "confidence": "high",
+  "lifecycle_stage": "drain",
+  "use_case_id": "01-pdb-eviction-blocked",
+  "target_context": {
+    "cluster_id": "ocp-prod-01",
+    "target_namespace": "payments",
+    "failing_pod": "payments-api-7b89-xyz",
+    "target_node": "worker-01.prod.rhocp",
+    "target_pdb": "payments-api-pdb"
+  },
+  "root_cause": {
+    "summary": "Eviction blocked because payments-api-pdb disruption allowance is exhausted (disruptionsAllowed: 0). The Deployment payments-api is currently at its minimum healthy threshold (2/2 replicas healthy with minAvailable: 2).",
+    "sub_branch": "3A_multi_replica_at_min_available",
+    "evidence_citations": [
+      {
+        "source": "ocp_logs",
+        "excerpt": "Cannot evict pod \"payments/payments-api-7b89-xyz\": Cannot evict pod as it would violate the pod's disruption budget."
+      },
+      {
+        "source": "k8s_objects",
+        "resource": "PodDisruptionBudget/payments-api-pdb",
+        "field": "status.disruptionsAllowed",
+        "value": 0
+      },
+      {
+        "source": "k8s_objects",
+        "resource": "PodDisruptionBudget/payments-api-pdb",
+        "field": "spec.minAvailable",
+        "value": 2
+      }
+    ]
+  },
+  "remediation": {
+    "remediation_type": "ANSIBLE_PLAYBOOK",
+    "playbook_match": true,
+    "playbook_id": "playbook_pdb_scale_up",
+    "playbook_file": "playbooks/remediate-pdb-scale-up.yml",
+    "risk_level": "low",
+    "requires_human_approval": true,
+    "aap_launch_spec": {
+      "target_cluster": "ocp-prod-01",
+      "target_namespace": "payments",
+      "workload_kind": "Deployment",
+      "workload_name": "payments-api",
+      "target_pdb_name": "payments-api-pdb",
+      "current_replicas": 2,
+      "scale_to": 3
+    },
+    "verification_goal": "pdb_disruptions_allowed > 0 and mcc_drain_resumed == true"
+  }
+}

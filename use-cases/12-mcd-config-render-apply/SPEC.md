@@ -1,99 +1,52 @@
-# SPEC: Rendered MachineConfig or configuration application failure
+# SPEC: Rendered MachineConfig or Configuration Apply Failure
 
-## Problem statement
-The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **rendered machineconfig or configuration application failure**, using evidence from the deployed cluster rather than assuming every `Updating` pool is a drain failure.
+## Problem Statement
+The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **rendered MachineConfig or configuration application failure**, determine whether the root cause is a controller-level MachineConfig merge collision (e.g. duplicate conflicting file paths), an invalid Ignition schema, or a host-level file-write/systemd-reload failure in MCD, and formulate an actionable remediation specification (manual CLI fallback) without direct cluster mutation.
 
-## Trigger and scope
-- Lifecycle stage: **Desired config render / MCD apply**
-- Trigger signal: MCP desired rendered config differs from current; MCO or MCD reports render, validation, unsupported config, file-write, systemd or update errors without a drain blocker.
-- In scope: read-only evidence gathering, causal classification, confidence reporting, recommended next step, and recovery verification.
-- Out of scope: autonomous disruptive changes, unsupported node mutation, or declaring an upgrade healthy based on one signal.
+## Trigger and Scope
+- Lifecycle stage: **Desired Config Render / MCD Apply**
+- Trigger signal: MCC/MCD logs match `(?i)(failed to render.*machineconfig|conflicting file.*in machineconfigs|error merging machineconfigs|failed to apply update|error writing file.*ignition|failed to reload systemd)` OR MCP condition `RenderDegraded` is `True` OR Node annotation `state` is `Degraded` with reason `FailedToApply`.
+- In scope: Read-only evidence gathering from unified Splunk multi-index search/KV store, distinguishing render-time from apply-time failures, identification of conflicting source MachineConfigs, confidence reporting, safe manual CLI fallback runbook generation, and recovery verification.
+- Out of scope: Directly patching or deleting generated `rendered-*` MachineConfigs, editing source MachineConfigs autonomously, or rebooting nodes without human sign-off.
 
-## Required evidence
-MCP `status.configuration`, rendered MachineConfig existence, MachineConfig objects, MCO/MCD logs, node current/desired config annotations and degraded reason.
+## Required Telemetry Sources (Splunk Only)
+* `index=ocp_logs`: Machine Config Controller render logs, Machine Config Daemon apply logs, systemd journal logs.
+* `index=k8s_objects` / KV Store:
+  * `MachineConfigPool` (`status.conditions` where `type == "RenderDegraded"` or `"Degraded"`, `spec.configuration.name`, `status.configuration.name`).
+  * `Node` (`metadata.annotations['machineconfiguration.openshift.io/state']`, `machineconfiguration.openshift.io/reason`, `currentConfig`, `desiredConfig`).
+  * `Event` (render failure and node apply events).
+* `index=ocp_metrics`: `machine_config_pool_status_degraded`, `machine_config_daemon_state`.
 
-## Diagnostic commands
-```bash
-oc get mcp <pool> -o yaml
-```
-```bash
-oc get mc
-```
-```bash
-oc get mc <rendered-config> -o yaml
-```
-```bash
-oc describe node <node>
-```
-```bash
-oc -n openshift-machine-config-operator logs <controller-pod> -c machine-config-controller --since=2h
-```
-```bash
-oc -n openshift-machine-config-operator logs <mcd-pod> -c machine-config-daemon --since=2h
-```
+## Diagnostic Strategy
+1. **Perception:** Ingest unified Splunk dossier in a single round-trip.
+2. **Correlation:** Check MCP conditions (`RenderDegraded`, `Degraded`) and Node annotations (`state`, `reason`).
+3. **Causal Depth:** Determine the exact failure point:
+   - Did the render controller fail to combine source MachineConfigs due to duplicate file path collisions? (Branch 3A).
+   - Did MCD fail to write files or reload systemd units on the host due to local disk exhaustion or permission errors? (Branch 3B).
+   - Did a MachineConfig specify an unsupported Ignition version or malformed syntax? (Branch 3C).
 
-## Remediation guidance
-Separate render-time failures from node apply failures. Validate the source MachineConfig and the rendered result; correct the owning config through GitOps/source-of-truth. For unsupported changes, use supported configuration APIs rather than patching rendered objects.
+## Two-Tier Remediation Contract
+1. **Playbook Matching (AAP / AWX):**
+   - **Automated remediation is STRICTLY PROHIBITED** (`matched: false`). MachineConfigs define low-level operating system and kernel parameters. Modifying them autonomously carries severe risk of rendering nodes unbootable.
+2. **Targeted CLI Fallback (Human SRE Runbook):**
+   - For render conflicts: locate the two colliding source MachineConfigs via `jq` path inspection, with instructions to reconcile the conflicting files in version-controlled GitOps repositories.
+   - For host apply failures: generate host disk inspection, journal cleanup, and systemd status inspection commands.
 
-## Safety constraints
-Editing generated rendered MachineConfigs or making unmanaged host changes creates drift and is not a durable fix.
-- Never fabricate output or infer a cause from MCP status alone.
-- Record cluster version, timestamp, affected node, MCP, relevant namespace/pod and exact error.
-- If API connectivity or evidence is insufficient, stop and report the missing data rather than recommending destructive cleanup.
-- Mutation requires explicit human approval, change record, bounded scope, rollback plan and post-change validation.
+## Safety Constraints
+* NEVER edit or delete generated `rendered-<pool>-<hash>` objects directly. Edits must be made to *source* `MachineConfig` objects.
+* NEVER touch host files directly from the agent.
+* The agent has zero direct mutation tools.
 
-## Success criteria
-Valid desired rendered config exists, MCD applies it, node reports target config, and MCP progresses.
+## Success Criteria
+`mcp.status.conditions[?(@.type=="RenderDegraded")].status == "False"`, a valid desired rendered MachineConfig is generated, Node annotation `state` returns to `Done`, and `currentConfig == desiredConfig`.
 
-## Acceptance tests
-1. Given the trigger signal and supporting evidence, the agent identifies this use case or explicitly reports ambiguity.
-2. The agent returns evidence references and distinguishes observed facts from hypotheses.
-3. The agent recommends read-only checks before any mutation.
-4. The agent does not execute a high-risk action without approval.
-5. The agent verifies the stated success criteria after remediation.
+---
 
+## Agent Graph Integration Contract
 
-## Kubernetes object observability requirements
+This use case is invoked by the shared 10-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`.
 
-**Scenario:** Rendered MachineConfig or application failure
-
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
-
-### Required object evidence
-- MachineConfigPool (desired configuration reference, conditions and rollout counters)
-- MachineConfig (name, labels, configuration identity and relevant status/metadata)
-- Node (currentConfig, desiredConfig, state/reason annotations when present)
-- Event (MCP/node configuration application failures)
-
-### Correlation rule
-Correlate rendered config identity and MCP desired reference with MCD logs, node annotations and event times. Avoid exporting full configuration payloads unless specifically approved.
-
-### Diagnosis gate
-A missing or changing rendered config reference is not enough. Require explicit render/apply failure evidence and a consistent relationship among MCP, MachineConfig and target node.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Case-specific diagnosis gate
-
-**Rendered config/apply failure:** Compare desired/current rendered MachineConfig references and MCD error details; confirm release-specific behavior before interpretation.
-
-Acceptance criteria: (1) correct cluster and lifecycle scope are validated; (2) diagnosis references time-bounded evidence IDs; (3) missing or stale data yields an explicit unknown/inconclusive outcome; (4) no mutation tool is called; (5) the report distinguishes observed facts, hypotheses, contradictions and recommendations.
+### Bounded Execution
+* Investigation Deadline: 45 seconds.
+* Tool Budget: Max 2 Splunk tool calls per investigation.
+* Output: Structured report with evidence citations and either an `aap_launch_spec` or `manual_cli_fallback`.

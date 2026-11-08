@@ -1,111 +1,192 @@
-# Skill: Diagnose Drain completion annotation or uncordon coordination mismatch
+# Skill: Fail-Proof Diagnosis for Drain Annotation or Uncordon Coordination Mismatch (`14-uncordon-or-drainer-annotation`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **drain completion annotation or uncordon coordination mismatch**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get node <node> -o jsonpath='{.spec.unschedulable}{"\n"}{.metadata.annotations.machineconfiguration\.openshift\.io/desiredDrain}{"\n"}{.metadata.annotations.machineconfiguration\.openshift\.io/lastAppliedDrain}{"\n"}'
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | MachineConfigPool is `Updating`, and target node is in drain or post-drain configuration phase. | Exit: `inconclusive: lifecycle_stage_not_updating` |
+| **Trigger Signal** | MCC or MCD logs match: `(?i)(uncordon.*during update|desiredDrain.*lastAppliedDrain|drain.*mismatch|node.*unexpectedly schedulable|waiting for drain.*annotation)` OR Node annotations `desiredDrain` and `lastAppliedDrain` diverge while 0 drainable pods remain. | Exit: `not_supported: no_drain_coordination_error_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc describe node <node>
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Node Coordination State]     [No Coordination Error]
+            Node name, spec.unschedulable,                ──► Exit: not_supported
+            desiredDrain & lastAppliedDrain annotations
+                         │
+                         ▼
+            [Step 2: Evaluate Schedulability & Desync]
+            Check spec.unschedulable vs lifecycle phase
+                         │
+         ┌───────────────┴───────────────────────────────┐
+         ▼                                               ▼
+  [spec.unschedulable == false]                 [spec.unschedulable == true]
+  Node is prematurely uncordoned!               Node is cordoned.
+  ──► Branch 3A: External Uncordon              Compare desiredDrain vs lastAppliedDrain
+                                                         │
+                         ┌───────────────────────────────┴───────────────────────────────┐
+                         ▼                                                               ▼
+            [desiredDrain == lastAppliedDrain]                              [desiredDrain != lastAppliedDrain]
+            Drain is officially complete!                                   Check pods remaining on node
+            Handoff to 12-mcd-apply / 13-os-reboot                                           │
+                                                         ┌───────────────────────────────────┴───────────────────────────────────┐
+                                                         ▼                                                                       ▼
+                                              [0 Drainable Pods Remain]                                               [Pods Still Evicting/Stuck]
+                                              Drain completed but annotation dropped!                                 Legitimate drain in progress.
+                                              ──► Branch 3B: Annotation Desync (API 409)                              Handoff to 01, 03, or 04
 ```
-```bash
-oc -n openshift-machine-config-operator logs <controller-pod> -c machine-config-controller --since=2h | grep -E '<node>|cordon|uncordon|annotation|drain'
+
+### Step 1: Extract Node Coordination State
+1. In `k8s_objects` / KV Store, lookup the target `Node` object:
+   * Record `spec.unschedulable` (boolean).
+   * Record annotation `machineconfiguration.openshift.io/desiredDrain`.
+   * Record annotation `machineconfiguration.openshift.io/lastAppliedDrain`.
+2. Extract MCC and MCD logs from `index=ocp_logs`:
+   * Look for optimistic locking conflicts: `(?i)Operation cannot be fulfilled on nodes.*the object has been modified`.
+   * Look for MCD wait states: `(?i)waiting for node to drain.*lastAppliedDrain`.
+   * Look for premature uncordon alerts: `(?i)node.*became schedulable during update`.
+
+### Step 2: Differentiate External Uncordon vs. Annotation Desync
+1. **Check Schedulability Flag:**
+   * If `spec.unschedulable == false` (or not present) while `desiredDrain` is non-empty and update is in-flight:
+     * **Premature Uncordon Confirmed.** Proceed to **Branch 3A**.
+2. **Check Annotation Equivalence:**
+   * If `desiredDrain == lastAppliedDrain`:
+     * Drain coordination is fully synchronized. The stall is NOT in drain coordination. Handoff to `use-cases/12-mcd-config-render-apply` (Ignition apply failure) or `use-cases/13-os-pivot-reboot-failure`.
+   * If `desiredDrain != lastAppliedDrain`:
+     * Scan `k8s_objects` / KV Store for running non-daemonset pods assigned to `spec.nodeName == target_node`:
+       * If **0 drainable pods remain**: Pod eviction is finished, but MCC failed to persist `lastAppliedDrain`. Proceed to **Branch 3B**.
+       * If **drainable pods are still present**: Eviction or termination is still blocked by workloads. Handoff to `use-cases/01-pdb-eviction-blocked`, `use-cases/03-pod-termination-finalizer`, or `use-cases/04-storage-unmount-detach`.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get mcp <pool> -o yaml
+                            [Drain Coordination Mismatch]
+                                          │
+            ┌─────────────────────────────┼─────────────────────────────┐
+            ▼                             ▼                             ▼
+  [Branch 3A: External Uncordon] [Branch 3B: Annotation Desync] [Branch 3C: Forged Annotation]
+  Autoscaler/Admin uncordoned    MCC 409 Conflict / dropped     lastAppliedDrain set manually
+  node while update in flight    write after drain finished     while pods were still running
+            │                             │                             │
+            ▼                             ▼                             ▼
+  Playbook: reconcile_drain_     Playbook: reconcile_drain_     Playbook: null (Data Risk)
+  annotation (Re-cordon node)    annotation (Sync annotation)   CLI Fallback: Emergency Halt
 ```
-4. Compare observations against the expected signal: Node remains cordoned or update does not advance despite pods appearing drained; desired-drainer and last-applied-drainer annotations differ, or an external actor uncordoned the node during drain.
-5. Validate the primary cause using these evidence sources: Desired/last-applied drainer annotations, `spec.unschedulable`, MCC logs, MachineConfigNode conditions if available, API patch errors and events.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Use the actual annotation keys present in the deployed release; compare desired and last-applied values and find the controller/API error. Remove competing automation that toggles schedulability, then allow the MCO controller to reconcile. Do not manually forge completion annotations.
-8. Explain the operational risk: Manually editing drainer annotations or uncordoning during an active update can falsely signal completion while new pods are scheduled onto the node.
-9. Define verification using: MCO-managed drain/uncordon request completes, coordination annotations converge through the controller, node schedulability matches the expected lifecycle phase, and MCP advances.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+* **Branch 3A: Premature Uncordon by External Actor or Competing Automation**
+  * *Evidence:* `spec.unschedulable == false`, newly created pods scheduled onto the node after update started, and MCC logs report `node became schedulable during update`.
+  * *Diagnosis:* An external actor (e.g. cluster autoscaler, automated node maintenance script, or manual admin intervention) executed `oc adm uncordon` during an active MCO rollout, creating a race condition where workloads land on a node undergoing OS pivot or reboot.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_reconcile_drain_annotation`**. (Re-cordons the node to prevent additional pod scheduling and triggers MCC reconciliation).
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+* **Branch 3B: Annotation Desync / API Concurrency Drop (`409 Conflict`)**
+  * *Evidence:* `desiredDrain != lastAppliedDrain`, but count of non-daemonset pods on the node is exactly 0. `ocp_logs` show MCC logged `drain complete for node`, but a subsequent node update failed with `409 Conflict` or etcd context timeout. MCD is indefinitely logging `waiting for drain`.
+  * *Diagnosis:* The node has successfully emptied, but the coordination flag `lastAppliedDrain` was never written to the API server due to an optimistic concurrency collision, leaving MCD in a permanent wait loop.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_reconcile_drain_annotation`**. (Patches `lastAppliedDrain` to equal `desiredDrain`, releasing MCD to begin applying machine config).
 
+* **Branch 3C: Forged / Premature Completion Annotation (Corrupt State)**
+  * *Evidence:* `lastAppliedDrain == desiredDrain`, but live user workload pods are still actively running and writing to local disks on the node.
+  * *Diagnosis:* An operator or automation forcibly forged `lastAppliedDrain` without draining the node, endangering application integrity as MCD initiates reboot.
+  * *Remediation Route:* **CRITICAL SAFETY HALT $\rightarrow$ Manual CLI Fallback Only.** Do NOT execute playbooks.
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** Uncordon or drainer annotation coordination
+## 4. Remediation Resolution Rules
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+### Rule 1: Automated Playbook Match (`playbook_reconcile_drain_annotation`)
+**Conditions for Match:**
+1. Branch 3A (node uncordoned prematurely while update in-flight) OR Branch 3B (0 drainable pods remain, but `lastAppliedDrain != desiredDrain`).
+2. Node is part of an active, unpaused `MachineConfigPool`.
+3. No active storage corruption or forged annotation detected.
 
-### Required object evidence
-- Node (spec.unschedulable, desiredDrain/lastAppliedDrain and related MCO annotations when present, resourceVersion)
-- Pod (nodeName and creation time for evidence of workloads scheduled during coordination race)
-- Event (node scheduling/cordon/uncordon events when available)
-- MCP (rollout state and counters)
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_reconcile_drain_annotation",
+  "playbook_file": "playbooks/remediate-drain-annotation.yml",
+  "risk_level": "low",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "draining_node": "{{ node_name }}",
+    "expected_mco_drain_state": "{{ desired_drain_hash }}",
+    "action": "reconcile_and_cordon"
+  },
+  "verification_goal": "node_desired_drain == node_last_applied_drain and spec.unschedulable == true"
+}
+```
 
-### Correlation rule
-Correlate Node schedulability and drain annotations with MCC logs and Pod scheduling timestamps. Preserve exact annotation values and observed times; verify names against the deployed release.
+---
 
-### Diagnosis gate
-Do not edit annotations or uncordon automatically. Confirm a coordination mismatch from controller logs plus object-state history; a single current Node snapshot may miss the race.
+### Rule 2: Manual CLI Fallback Generation (Branch 3C or Complex Competing Automation)
+**Triggered when:** Live workloads are running while annotations indicate completion, or persistent external controllers continuously toggle `spec.unschedulable`.
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Live workloads detected on node despite completion annotation; emergency human intervention required.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Check current node cordoning and MCO drain annotations:",
+      "oc get node {{ node_name }} -o jsonpath='Schedulable: {.spec.unschedulable}{\"\\n\"}Desired: {.metadata.annotations.machineconfiguration\\.openshift\\.io/desiredDrain}{\"\\n\"}Applied: {.metadata.annotations.machineconfiguration\\.openshift\\.io/lastAppliedDrain}{\"\\n\"}'",
+      "# 2. Check for running pods that should have been drained:",
+      "oc get pods -A --field-selector spec.nodeName={{ node_name }} -o wide"
+    ],
+    "remediation_steps": [
+      "# 3. Immediately re-cordon the node to halt new scheduling:",
+      "oc adm cordon {{ node_name }}",
+      "# 4. Identify and disable competing automation controllers toggling node schedulability:",
+      "oc get events -n default --field-selector involvedObject.name={{ node_name }} | grep -Ei 'uncordon|cordon'",
+      "# 5. Once competing automation is silenced, let MCC reconcile naturally or trigger node drain:",
+      "oc adm drain {{ node_name }} --force --ignore-daemonsets --delete-emptydir-data"
+    ],
+    "safety_warning": "Never manually set lastAppliedDrain unless you have verified that all non-daemonset pods have finished terminating.",
+    "verification": [
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'",
+      "oc -n openshift-machine-config-operator logs -l k8s-app=machine-config-daemon -c machine-config-daemon --tail=50"
+    ]
+  }
+}
+```
 
-## Agent graph integration contract (shared)
+---
 
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing Node Record:** Target node specified in alert is not found in `index=k8s_objects` or KV Store. Report: `inconclusive: node_record_missing`.
+3. **MCO Release Annotation Schema Ambiguity:** On legacy or custom releases where `desiredDrain` annotation key differs from standard schema. Report: `inconclusive: unsupported_drain_annotation_schema`.
+4. **Active Eviction Conflict:** Drainable pods are still failing to evict due to PDB or volume locks. Report: `not_supported: drain_in_progress_route_to_workload_skill`.
 
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
+---
 
-## Executable skill contract
+## 6. Post-Remediation Verification Contract
 
-### Goal
-Diagnose: **Uncordon/drainer coordination**. Read unschedulable state and exact drain coordination annotations. Treat unexpected uncordon as a safety signal; do not modify annotations or mark completion.
+Whether executed via AAP playbook or manual CLI, recovery MUST be proven using these exact signals:
 
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Annotation Convergence:** `metadata.annotations['machineconfiguration.openshift.io/desiredDrain'] == metadata.annotations['machineconfiguration.openshift.io/lastAppliedDrain']`.
+2. **Node Cordon Integrity:** `node.spec.unschedulable == true` throughout the configuration apply and reboot cycle.
+3. **MCD Advancement:** MachineConfigDaemon logs in `index=ocp_logs` transition from `waiting for drain` to `Applying MachineConfig` or `rebooting node`.

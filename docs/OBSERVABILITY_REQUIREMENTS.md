@@ -11,21 +11,22 @@
 
 To eliminate collector memory bloat, high etcd churn, and high Splunk ingest costs:
 1. **Logs & Metrics Remain Primary:** Container logs (MCC, MCD, Kubelet) and Prometheus metrics (`kube-state-metrics`, KubeVirt metrics) provide 80%+ of all diagnostic signals.
-2. **The "Golden Six" Kubernetes Objects:** Object collection is strictly restricted to **6 core types**. All heavy virtualization CRDs (`VirtualMachine`, `DataVolume`, `VMIM`) are dropped.
-3. **Field Pruning at Ingestion:** `metadata.managedFields` and container environment variables are stripped by OpenTelemetry, reducing JSON payload size by 65%.
+2. **Curated Kubernetes Object Allowlist:** Object collection is strictly restricted to essential diagnostic types. Heavy virtualization CRDs (`VirtualMachine`, `DataVolume`, `VMIM`) are dropped, and `MachineConfig` objects have raw base64 file payloads stripped.
+3. **Field Pruning at Ingestion:** `metadata.managedFields`, container environment variables, and `spec.config.storage.files[*].contents` are stripped by OpenTelemetry, reducing JSON payload size by 65%+ and preventing collector OOMKills.
 4. **Zero-Compute State (Splunk KV Store):** Static and slow-changing objects (PDBs, Nodes) are maintained in a Splunk KV Store (`k8s_live_inventory_lookup`) to guarantee full state visibility with zero index bucket scanning.
 
 ---
 
-## 2. The "Golden Six" Kubernetes Object Allowlist
+## 2. The Core Kubernetes Object Allowlist
 
 | Object Kind | API Group / Version | What It Provides That Metrics/Logs Cannot | Excluded Fields |
 |---|---|---|---|
 | **`Pod`** | `core/v1` | `metadata.finalizers` (UC 03), `metadata.labels` for PDB selector matching (UC 01), `metadata.deletionTimestamp`. | `metadata.managedFields`, `spec.containers[*].env`, `spec.containers[*].envFrom` |
 | **`PodDisruptionBudget`** | `policy/v1` | `spec.selector` (resolves which PDB owns a pod when multiple PDBs exist in a namespace). | `metadata.managedFields` |
 | **`Node`** | `core/v1` | `metadata.annotations`: MCO drain coordination keys (`desiredDrain` vs `lastAppliedDrain` in UC 14), `spec.unschedulable`. | `metadata.managedFields`, `status.images` |
-| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04). | `metadata.managedFields` |
+| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04, 16). | `metadata.managedFields` |
 | **`MachineConfigPool`** | `machineconfiguration.openshift.io/v1` | Current vs. desired rendered config references, pool rollout progress, and paused flags (UC 10, 11, 12). | `metadata.managedFields` |
+| **`MachineConfig`** | `machineconfiguration.openshift.io/v1` | Target file paths (`spec.config.storage.files[*].path`), systemd unit definitions (`spec.config.systemd.units`), kernel arguments (`spec.kernelArguments`), and OS image URL for diagnosing config drift and render collisions (UC 11, 12). | `metadata.managedFields`, `spec.config.storage.files[*].contents` (raw base64 file payloads stripped to prevent collector OOMs and Splunk index bloat) |
 | **`Event`** | `core/v1` | Fast chronological timeline of eviction denials and scheduling rejections. | None |
 
 ---
@@ -79,6 +80,13 @@ receivers:
         mode: watch
         exclude:
           - metadata.managedFields
+
+      - name: machineconfigs
+        group: machineconfiguration.openshift.io
+        mode: watch
+        exclude:
+          - metadata.managedFields
+          - spec.config.storage.files[*].contents
 
       - name: events
         mode: watch

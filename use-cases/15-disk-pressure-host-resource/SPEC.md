@@ -1,97 +1,64 @@
-# SPEC: Node disk pressure or host resource exhaustion stalls cleanup/update
+# SPEC: Node Disk Pressure or Host Resource Exhaustion (`15-disk-pressure-host-resource`)
 
-## Problem statement
-The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **node disk pressure or host resource exhaustion stalls cleanup/update**, using evidence from the deployed cluster rather than assuming every `Updating` pool is a drain failure.
+## Problem Statement
+The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **node disk pressure, ephemeral storage saturation, or host process (PID) exhaustion**, isolate the specific partition or subsystem facing starvation (CRI-O container image store, host systemd journal / audit logs, pod emptyDir ephemeral storage, or host PID table), and generate a guarded manual CLI fallback runbook using evidence from Splunk without direct Kubernetes cluster mutation.
 
-## Trigger and scope
-- Lifecycle stage: **Node runtime / storage / apply**
-- Trigger signal: Node `DiskPressure`, filesystem or inode exhaustion, CRI-O image/container storage errors, kubelet errors, or MCD cannot write/apply configuration.
-- In scope: read-only evidence gathering, causal classification, confidence reporting, recommended next step, and recovery verification.
-- Out of scope: autonomous disruptive changes, unsupported node mutation, or declaring an upgrade healthy based on one signal.
+## Trigger and Scope
+- **Lifecycle Stage:** **Node Drain / MCD Apply / Node Readiness**
+- **Trigger Signal:** Node condition `DiskPressure: True` or `PIDPressure: True` in `index=k8s_objects` OR Kubelet/MCD logs in `index=ocp_logs` match:
+  `(?i)(no space left on device|FreeDiskSpaceFailed|ImageGCFailed|failed to garbage collect images|eviction manager: node had condition: \[DiskPressure\]|maximum number of pids reached|write /etc/.*: no space left on device)`.
+- **In Scope:** Read-only evidence gathering from unified Splunk multi-index search/KV store, root-cause isolation across host subsystems, confidence reporting, remediation formulation (Manual CLI fallback with strict safety guardrails), and recovery verification.
+- **Out of Scope:** Autonomous host file deletion, arbitrary `rm -rf` inside container directories, killing core platform daemons, or direct cluster mutation.
 
-## Required evidence
-Node conditions/events, filesystem and inode metrics, kubelet/CRI-O logs, MCD write errors, node-exporter/monitoring data, host journal.
+## Required Telemetry Sources (Splunk Only)
+* `index=ocp_logs`:
+  * Kubelet logs on target node: `ImageGCFailed`, `FreeDiskSpaceFailed`, `eviction manager` disk/PID pressure declarations.
+  * MCD logs: `write /etc/...: no space left on device`, config render/apply write failures.
+* `index=k8s_objects` / KV Store:
+  * `Node`: Target node `status.conditions` (`DiskPressure`, `PIDPressure`, `Ready`), allocatable/capacity storage, and daemon lease status.
+  * `Pod`: Workload pods on target node with unconstrained ephemeral storage or evictions.
+  * `Event`: `reason IN ["Evicted", "FailedScheduling", "NodeDiskPressure", "FreeDiskSpaceFailed"]`.
+  * `MachineConfigPool`: Pool status reporting `Degraded: True` or `Updating` stalled.
+* `index=ocp_metrics`:
+  * `node_filesystem_avail_bytes{mountpoint=~"/|/var|/var/lib/containers"}`, `node_filesystem_size_bytes`.
+  * `node_filesystem_files_free` (inode exhaustion).
+  * `node_pids{node="<node>"}`, `node_pids_max`.
 
-## Diagnostic commands
-```bash
-oc describe node <node>
-```
-```bash
-oc get events -A --sort-by=.lastTimestamp
-```
-```bash
-oc adm node-logs <node> --path=journal
-```
-```bash
-oc -n openshift-machine-config-operator logs <mcd-pod> -c machine-config-daemon --since=2h
-```
-```bash
-oc get co machine-config
-```
+## Diagnostic Strategy
+1. **Perception:** Ingest unified Splunk dossier in a single round-trip (< 10s query, < 45s deadline).
+2. **Correlation:** Match the node under maintenance with active `DiskPressure` or `PIDPressure` conditions and correlate with MCD write errors or Kubelet eviction manager logs.
+3. **Causal Branching:**
+   - **Branch 3A (CRI-O Image Store Exhaustion):** `/var/lib/containers` > 85% full, Kubelet logs report `ImageGCFailed` or `failed to garbage collect images`.
+   - **Branch 3B (Host Systemd Journal / Log Exhaustion):** `/` or `/var` > 95% full, `/var/log/journal` consuming excessive disk, MCD reports `no space left on device`.
+   - **Branch 3C (Pod Ephemeral Storage Bloat):** Pod writing unconstrained data to local `emptyDir` on `/var/lib/kubelet` without `limits.ephemeral-storage`.
+   - **Branch 3D (Host PID Table Exhaustion):** Node condition `PIDPressure: True`, `node_pids` approaching `kernel.pid_max`, process spawn failures.
 
-## Remediation guidance
-Identify the exhausted filesystem/resource and clean up only through the supported node/storage procedure. Confirm no critical data is removed and restore headroom before retrying the update.
+## Two-Tier Remediation Contract
+Host disk and process cleanup carries catastrophic data-loss and state-corruption risks. Autonomous mutation is strictly prohibited.
+- **Ansible Playbook Catalog:** `playbook_match: null`. (No automated playbook is permitted to delete host files or kill processes autonomously).
+- **Targeted Manual CLI Fallback:**
+  - *Branch 3A (Image Store):* Guarded SRE procedure to debug node and execute `crictl rmi --prune` via runtime socket (avoiding direct overlay2 filesystem tampering).
+  - *Branch 3B (Journal):* Guarded SRE procedure to vacuum systemd logs (`journalctl --vacuum-size=1G`).
+  - *Branch 3C (Ephemeral Storage):* Procedure to inspect pod usage (`du -sh /var/lib/kubelet/pods/...`) and evict offending unconstrained workloads.
+  - *Branch 3D (PID Exhaustion):* Procedure to inspect cgroups (`systemd-cgls`) and terminate the offending container via `crictl stop`.
 
-## Safety constraints
-Blind deletion under `/var/lib/containers`, `/var/lib/kubelet`, or managed OS paths can corrupt node state. Avoid ad-hoc host cleanup.
-- Never fabricate output or infer a cause from MCP status alone.
-- Record cluster version, timestamp, affected node, MCP, relevant namespace/pod and exact error.
-- If API connectivity or evidence is insufficient, stop and report the missing data rather than recommending destructive cleanup.
-- Mutation requires explicit human approval, change record, bounded scope, rollback plan and post-change validation.
+## Safety Constraints
+> [!CAUTION]
+> The diagnostic agent MUST NEVER recommend or execute recursive file deletion (`rm -rf`) under `/var/lib/containers/storage/overlay` or `/var/lib/kubelet`. Deleting files directly from backing stores breaks overlay2 metadata and corrupts the CRI-O database, bricking the node.
 
-## Success criteria
-Node pressure clears, kubelet/CRI-O and MCD operate normally, and update progresses.
+## Success Criteria
+1. Node condition `DiskPressure: False` and `PIDPressure: False`.
+2. Target node condition `Ready: True`.
+3. MCD pod on target node applies configuration without I/O write failures and transitions to `Done`.
+4. MachineConfigPool update advances to next node.
 
-## Acceptance tests
-1. Given the trigger signal and supporting evidence, the agent identifies this use case or explicitly reports ambiguity.
-2. The agent returns evidence references and distinguishes observed facts from hypotheses.
-3. The agent recommends read-only checks before any mutation.
-4. The agent does not execute a high-risk action without approval.
-5. The agent verifies the stated success criteria after remediation.
+---
 
+## Agent Graph Integration Contract
 
-## Kubernetes object observability requirements
+This use case is invoked by the shared 10-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`.
 
-**Scenario:** Disk pressure or host resource exhaustion
-
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
-
-### Required object evidence
-- Node (DiskPressure/MemoryPressure/PIDPressure, transition times, capacity/allocatable)
-- Pod (nodeName, phase/conditions, resource requests/limits, ephemeral-storage requests/limits where configured, termination state)
-- Event (eviction, image filesystem, ephemeral storage, node pressure events)
-- PVC/PV only if storage capacity or mount pressure is implicated
-- MCP/Node config state if resource exhaustion coincides with update lifecycle
-
-### Correlation rule
-Prometheus host/node metrics and node/kubelet/CRI-O logs are primary. Use Node conditions and events to correlate the resource-pressure state with drain and pod termination timeline.
-
-### Diagnosis gate
-Do not attribute DiskPressure to a particular Pod without supporting eviction/ephemeral-storage evidence. Distinguish node filesystem pressure from PVC/backend capacity issues.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Case-specific diagnosis gate
-
-**Disk pressure/resource exhaustion:** Correlate node conditions, filesystem/inode metrics, eviction signals and MCD/CRI-O logs. Do not delete files or prune runtime storage automatically.
-
-Acceptance criteria: (1) correct cluster and lifecycle scope are validated; (2) diagnosis references time-bounded evidence IDs; (3) missing or stale data yields an explicit unknown/inconclusive outcome; (4) no mutation tool is called; (5) the report distinguishes observed facts, hypotheses, contradictions and recommendations.
+### Bounded Execution
+* Investigation Deadline: 45 seconds.
+* Tool Budget: Max 2 Splunk tool calls per investigation.
+* Output: Structured report with evidence citations, root-cause partition isolation, and guarded manual CLI fallback.

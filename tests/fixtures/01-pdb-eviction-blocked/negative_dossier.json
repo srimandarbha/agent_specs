@@ -1,0 +1,48 @@
+{
+  "status": "ok",
+  "observed_at": "2026-11-08T09:30:00Z",
+  "execution_time_ms": 3200,
+  "records": [
+    {
+      "cluster_id": "ocp-prod-01",
+      "target_namespace": "payments",
+      "target_resource": "payments-api-7b89-xyz",
+      "node_name": "worker-01.prod.rhocp",
+      "first_seen": "2026-11-08T09:15:00Z",
+      "last_seen": "2026-11-08T09:29:45Z",
+      "controller_eviction_errors": [],
+      "objects_observed": [
+        "Pod",
+        "PodDisruptionBudget",
+        "Node",
+        "MachineConfigPool"
+      ],
+      "pod_details": {
+        "name": "payments-api-7b89-xyz",
+        "namespace": "payments",
+        "owner_kind": "Deployment",
+        "owner_name": "payments-api",
+        "phase": "Running"
+      },
+      "pdb_details": {
+        "name": "payments-api-pdb",
+        "namespace": "payments",
+        "min_available": 1,
+        "current_healthy": 3,
+        "desired_healthy": 3,
+        "disruptions_allowed": 2
+      },
+      "node_details": {
+        "name": "worker-01.prod.rhocp",
+        "conditions": {
+          "Ready": "True"
+        },
+        "desired_drain": "true",
+        "last_applied_drain": "true"
+      },
+      "relevant_metrics": [
+        "kube_pod_disruption_budget_status_pod_disruptions_allowed{poddisruptionbudget=\"payments-api-pdb\",namespace=\"payments\"}=2"
+      ]
+    }
+  ]
+}

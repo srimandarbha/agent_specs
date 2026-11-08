@@ -1,100 +1,54 @@
-# SPEC: OS pivot, reboot or post-reboot verification fails
+# SPEC: OS Pivot, Reboot or Post-Reboot Verification Failure
 
-## Problem statement
-The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **os pivot, reboot or post-reboot verification fails**, using evidence from the deployed cluster rather than assuming every `Updating` pool is a drain failure.
+## Problem Statement
+The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **OS pivot, reboot or post-reboot verification failure**, isolate whether the breakdown occurred during pre-reboot `rpm-ostree` image staging (e.g. `/boot` disk full), during host reboot (firmware/GRUB/kernel hang), or post-reboot verification (Greenboot auto-rollback or commit mismatch), and formulate an actionable remediation specification (manual CLI fallback) without direct cluster mutation.
 
-## Trigger and scope
-- Lifecycle stage: **Apply / OS pivot / reboot**
-- Trigger signal: Drain has completed but node does not return Ready or update completion; MCD logs mention rpm-ostree, pivot, booted OS image, reboot or current/desired config verification.
-- In scope: read-only evidence gathering, causal classification, confidence reporting, recommended next step, and recovery verification.
-- Out of scope: autonomous disruptive changes, unsupported node mutation, or declaring an upgrade healthy based on one signal.
+## Trigger and Scope
+- Lifecycle stage: **Apply / OS Pivot / Reboot / Verification**
+- Trigger signal: MCD logs match `(?i)(failed to pivot|rpm-ostree.*failed|reboot.*failed|booted deployment.*does not match|failed to verify booted|node has not rebooted)` OR Node condition `Ready` is `Unknown` past the reboot grace window (> 15m) OR Node annotation `state` is `Degraded` with reason `FailedToVerifyBootedDeployment`.
+- In scope: Read-only evidence gathering from unified Splunk multi-index search/KV store, distinguishing pre-reboot, reboot-hang, and post-reboot verification phases, confidence reporting, safe manual CLI fallback runbook generation, and recovery verification.
+- Out of scope: Autonomous node power cycling or reboots, force-deleting nodes, or modifying GRUB configurations directly from the agent.
 
-## Required evidence
-MCD logs before and after reboot, node Ready/lease, boot ID, pivot/rpm-ostree logs, machine console, current/desired config and ClusterVersion status.
+## Required Telemetry Sources (Splunk Only)
+* `index=ocp_logs`: Machine Config Daemon pivot logs, host systemd journal logs, Kubelet logs.
+* `index=k8s_objects` / KV Store:
+  * `Node` (`status.conditions` where `type == "Ready"`, `metadata.annotations['machineconfiguration.openshift.io/state']`, `currentConfig`, `desiredConfig`).
+  * `Lease` in `kube-node-lease` (`spec.renewTime`).
+  * `MachineConfigPool` (`status.configuration`, `status.updatedMachineCount`).
+  * `Event` (node reboot and condition events).
+* `index=ocp_metrics`: `up{job="kubelet"}`, `machine_config_daemon_state`.
 
-## Diagnostic commands
-```bash
-oc get mcp <pool> -o yaml
-```
-```bash
-oc describe node <node>
-```
-```bash
-oc -n openshift-machine-config-operator get pods -o wide | grep <node>
-```
-```bash
-oc -n openshift-machine-config-operator logs <mcd-pod> -c machine-config-daemon --since=2h
-```
-```bash
-oc get clusterversion
-```
-```bash
-oc get co machine-config
-```
+## Diagnostic Strategy
+1. **Perception:** Ingest unified Splunk dossier in a single round-trip.
+2. **Correlation:** Check Node `currentConfig` vs `desiredConfig`, `kube-node-lease` age, and MCD pivot logs.
+3. **Causal Depth:** Determine the exact failure point:
+   - Did `rpm-ostree rebase` fail before reboot due to `/boot` space exhaustion or image pull failure? (Branch 3A).
+   - Did the host reboot command execute, but the host never came back up (> 15m silence)? (Branch 3B).
+   - Did the host reboot, but Greenboot rolled back to the old deployment due to a critical boot service failure? (Branch 3C).
 
-## Remediation guidance
-Use node console and release-specific OS upgrade recovery guidance. Confirm image/payload availability and booted deployment, then restore node health using the supported recovery path. Do not repeatedly reboot without examining boot/pivot evidence.
+## Two-Tier Remediation Contract
+1. **Playbook Matching (AAP / AWX):**
+   - **Automated remediation is STRICTLY PROHIBITED** (`matched: false`). Operating system pivots and kernel deployments require hardware and console validation; uncoordinated power actions risk corrupting the GRUB partition.
+2. **Targeted CLI Fallback (Human SRE Runbook):**
+   - For pre-reboot staging: output `rpm-ostree cleanup -m` commands to free space in `/boot`.
+   - For reboot hangs: output out-of-band IPMI / virtual console troubleshooting runbook.
+   - For post-reboot rollbacks: output Greenboot log inspection and ostree deployment status commands.
 
-## Safety constraints
-OS rollback, node replacement, or force-reapply can affect availability and should follow the documented recovery procedure with workload and platform owners engaged.
-- Never fabricate output or infer a cause from MCP status alone.
-- Record cluster version, timestamp, affected node, MCP, relevant namespace/pod and exact error.
-- If API connectivity or evidence is insufficient, stop and report the missing data rather than recommending destructive cleanup.
-- Mutation requires explicit human approval, change record, bounded scope, rollback plan and post-change validation.
+## Safety Constraints
+* NEVER initiate reboots or power resets autonomously.
+* NEVER delete Node objects in Kubernetes while host is offline.
+* The agent has zero direct mutation tools.
 
-## Success criteria
-Node boots into the expected OS/config, becomes Ready, MCD verification passes, and the pool's updated count advances.
+## Success Criteria
+Node condition `Ready` is restored, `node.metadata.annotations['machineconfiguration.openshift.io/currentConfig'] == node.metadata.annotations['machineconfiguration.openshift.io/desiredConfig']`, Node annotation `state` becomes `Done`, and MachineConfigPool updated count advances.
 
-## Acceptance tests
-1. Given the trigger signal and supporting evidence, the agent identifies this use case or explicitly reports ambiguity.
-2. The agent returns evidence references and distinguishes observed facts from hypotheses.
-3. The agent recommends read-only checks before any mutation.
-4. The agent does not execute a high-risk action without approval.
-5. The agent verifies the stated success criteria after remediation.
+---
 
+## Agent Graph Integration Contract
 
-## Kubernetes object observability requirements
+This use case is invoked by the shared 10-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`.
 
-**Scenario:** OS pivot, reboot or post-reboot verification failure
-
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
-
-### Required object evidence
-- Node (conditions, transition times, current/desired config and state/reason annotations when present)
-- MachineConfigPool (conditions and rollout counters)
-- MachineConfig (desired configuration identity)
-- Event (node readiness and configuration lifecycle events)
-- Lease (heartbeat timing when reboot/return-to-service is in question)
-
-### Correlation rule
-Use MCD/MCC logs and Prometheus as primary evidence; correlate reboot/pivot timestamps with Node conditions, Lease renewals, config annotations and MCP counters.
-
-### Diagnosis gate
-A temporary missing heartbeat can be expected during reboot. Diagnose failure only when the expected return/verification window is exceeded and corroborating logs or sustained state support it.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Case-specific diagnosis gate
-
-**OS pivot/reboot failure:** Correlate pivot/service logs, node availability, boot ID if exposed, current config and post-reboot MCD state. Do not initiate a reboot.
-
-Acceptance criteria: (1) correct cluster and lifecycle scope are validated; (2) diagnosis references time-bounded evidence IDs; (3) missing or stale data yields an explicit unknown/inconclusive outcome; (4) no mutation tool is called; (5) the report distinguishes observed facts, hypotheses, contradictions and recommendations.
+### Bounded Execution
+* Investigation Deadline: 45 seconds.
+* Tool Budget: Max 2 Splunk tool calls per investigation.
+* Output: Structured report with evidence citations and either an `aap_launch_spec` or `manual_cli_fallback`.

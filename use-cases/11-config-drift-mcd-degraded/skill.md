@@ -1,114 +1,184 @@
-# Skill: Diagnose Machine Config Daemon reports configuration drift
+# Skill: Fail-Proof Diagnosis for Machine Config Daemon Configuration Drift (`11-config-drift-mcd-degraded`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **machine config daemon reports configuration drift**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc describe node <node>
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node or MCP is reporting `Degraded` state during preflight or update. | Exit: `inconclusive: lifecycle_stage_not_degraded` |
+| **Trigger Signal** | Node annotation `machineconfiguration.openshift.io/state` is `Degraded` OR MCD pod logs in `index=ocp_logs` match: `(?i)(content of file.*does not match expected|unexpected file mode|config drift detected|node.*degraded.*drift|inconsistent.*on-disk)` OR Prometheus metric `machine_config_daemon_state{state="Degraded"} == 1`. | Exit: `not_supported: no_mcd_drift_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get mcp <pool> -o yaml
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Drifted Node & Path]         [No MCD Drift Logged]
+            Node name, drifted path, state/reason         ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Differentiate Drift Target]
+            Identify drifted object: Systemd unit, file, or ostree
+                         │
+         ┌───────────────┼───────────────────────────────┐
+         ▼               ▼                               ▼
+  [Allowlisted Service]  [Managed File Drift]            [Immutable /usr / OSTree]
+  chronyd / crio daemon  /etc/* file content or          /usr/lib or filesystem
+  unit failed/drifted    permissions modified            corruption detected
+         │                       │                               │
+         ▼                       ▼                               ▼
+  Branch 3A: Unit        Branch 3B: Host File Drift      Branch 3C: OS Corruption
+  Restart Playbook       (Manual CLI Diff & Forcefile)   (Manual CLI Re-image)
 ```
-```bash
-oc -n openshift-machine-config-operator get pods -o wide | grep <node>
+
+### Step 1: Extract Drifted Node & File Path
+1. In `k8s_objects` / KV Store, inspect the target `Node` object:
+   * Record annotation `machineconfiguration.openshift.io/state` (must be `Degraded`).
+   * Record annotation `machineconfiguration.openshift.io/reason`.
+   * Record `machineconfiguration.openshift.io/currentConfig` and `desiredConfig`.
+2. Extract the exact drifted target from MCD logs in `index=ocp_logs`:
+   ```regex
+   (?i)content of file "(?<drifted_filepath>[^"]+)" does not match expected
+   ```
+   OR
+   ```regex
+   (?i)unexpected file mode for "(?<drifted_filepath>[^"]+)": expected (?<expected_mode>\d+), got (?<actual_mode>\d+)
+   ```
+
+### Step 2: Differentiate Host Service vs. Managed File vs. CoreOS Layer
+1. **Case 2A: Drifted target is an allowlisted systemd unit:**
+   * If error involves a crashed or deadlocked service unit (e.g. `chronyd.service`, `crio.service`): proceed to **Branch 3A**.
+2. **Case 2B: Drifted target is a managed file in `/etc`:**
+   * If error references an MCO-managed configuration file (e.g. `/etc/chrony.conf`, `/etc/sysctl.d/*`, `/etc/security/*`, `/etc/containers/registries.conf`): proceed to **Branch 3B**.
+3. **Case 2C: Drifted target is in `/usr` or immutable ostree rootfs:**
+   * If error references read-only filesystem or `/usr`: proceed to **Branch 3C**.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc -n openshift-machine-config-operator logs <mcd-pod> -c machine-config-daemon --since=2h
+                              [MCD Configuration Drift]
+                                          │
+            ┌─────────────────────────────┼─────────────────────────────┐
+            ▼                             ▼                             ▼
+  [Branch 3A: Systemd Unit]     [Branch 3B: Managed File Drift] [Branch 3C: CoreOS Rootfs]
+  Auxiliary service failed;     Manual edit / unmanaged agent   OSTree mismatch or corrupt
+  node marked Degraded          altered /etc/* on live host     RHCOS filesystem
+            │                             │                             │
+            ▼                             ▼                             ▼
+  Playbook: restart_systemd_    Playbook: null (Data Risk)      Playbook: null (OS Panic)
+  unit (extra_vars: service)    CLI Fallback: Forcefile Diff    CLI Fallback: Node Re-image
 ```
-```bash
-oc get events -A --sort-by=.lastTimestamp
+
+* **Branch 3A: Recoverable Systemd Unit / Service Degradation**
+  * *Evidence:* MCD marks node `Degraded` because an enabled systemd unit failed during verification (e.g. `chronyd.service`), but on-disk files match.
+  * *Diagnosis:* Auxiliary host service crashed or failed restart during MCO preflight.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_restart_failed_systemd_unit`** with `systemd_service_name: "<unit>"`.
+
+* **Branch 3B: Out-of-Band Administrative or Agent File Mutation**
+  * *Evidence:* MCD logs report exact file mismatch: `content of file /etc/... does not match expected`.
+  * *Diagnosis:* A human administrator, non-Kubernetes configuration management tool (Puppet/Chef/Ansible), or security agent modified an MCO-managed file directly on the host, causing MCD to refuse applying further MachineConfigs.
+  * *Remediation Route:* **DO NOT touch host files autonomously.** Route to **Manual CLI Fallback**:
+    - Compares current host content against the authoritative `MachineConfig` object.
+    - Generates human-approved runbook to revert manual edits or create `/run/machine-config-daemon-force` to force MCO overwrite.
+
+* **Branch 3C: CoreOS / Immutable OSTree Image Corruption**
+  * *Evidence:* MCD logs report `read-only file system` or `/usr/lib` checksum mismatch.
+  * *Diagnosis:* Underlying operating system storage corruption or unauthorized attempt to modify immutable RHCOS partitions.
+  * *Remediation Route:* **CRITICAL SAFETY HALT $\rightarrow$ Manual CLI Fallback Only.** Node re-provisioning or hardware replacement required.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_restart_failed_systemd_unit`)
+**Conditions for Match:**
+1. Branch 3A is satisfied (failed allowlisted systemd unit).
+2. Node condition `Ready` is `True` (host networking alive).
+3. Service is strictly in the allowlist (`chronyd`, `crio`, `systemd-journald`).
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_restart_failed_systemd_unit",
+  "playbook_file": "playbooks/remediate-restart-systemd-unit.yml",
+  "risk_level": "medium",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "target_node": "{{ node_name }}",
+    "systemd_service_name": "{{ failed_service }}"
+  },
+  "verification_goal": "mcd_degraded == false and node_state == 'Done'"
+}
 ```
-4. Compare observations against the expected signal: Node/MCP degraded with on-disk state mismatch or config drift messages; node may still be Ready but refuses update.
-5. Validate the primary cause using these evidence sources: MCD logs, node annotations/conditions, current and desired rendered MachineConfig, event showing drifted path, host file metadata/content under approved access.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Identify the exact drifted object and authoritative desired content. Restore the managed file/permissions to match the applied config, or follow the release-specific MCO recovery procedure. Force-reapply mechanisms may reboot the node and require explicit approval.
-8. Explain the operational risk: Do not manually edit managed host files or create an MCD forcefile as a casual workaround; either can trigger unexpected changes/reboot.
-9. Define verification using: MCD preflight passes, node state is no longer Degraded, and the target config is applied and verified.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - Managed File Drift)
+**Triggered when:** On-disk file in `/etc` was modified out-of-band.
 
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Host file drift detected; human approval required to overwrite local changes with authoritative MachineConfig.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Inspect exact drift reason on the degraded node:",
+      "oc get node {{ node_name }} -o jsonpath='State: {.metadata.annotations.machineconfiguration\\.openshift\\.io/state}{\"\\n\"}Reason: {.metadata.annotations.machineconfiguration\\.openshift\\.io/reason}{\"\\n\"}'",
+      "# 2. Inspect drifted file content directly on the host:",
+      "oc debug node/{{ node_name }} -- chroot /host cat {{ drifted_filepath }}"
+    ],
+    "remediation_steps": [
+      "# 3. Compare with authoritative content in the rendered MachineConfig:",
+      "oc get mc {{ desired_config_name }} -o json | jq '.spec.config.storage.files[] | select(.path==\"{{ drifted_filepath }}\")'",
+      "# 4. Option A (Revert manual change): Edit file back to expected content or permissions on host.",
+      "# 5. Option B (Force MCO overwrite): Trigger MCO force-reapply by creating forcefile:",
+      "oc debug node/{{ node_name }} -- chroot /host touch /run/machine-config-daemon-force"
+    ],
+    "safety_warning": "Touching /run/machine-config-daemon-force instructs MCD to overwrite all local changes and may immediately reboot the node.",
+    "verification": [
+      "oc get node {{ node_name }} -o jsonpath='{.metadata.annotations.machineconfiguration\\.openshift\\.io/state}'",
+      "oc get mcp {{ pool_name }} -o jsonpath='{.status.conditions[?(@.type==\"Degraded\")].status}'"
+    ]
+  }
+}
+```
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** Configuration drift or MCD degraded
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Required object evidence
-- Node (currentConfig, desiredConfig, state, reason annotations when present; conditions and transition times)
-- MachineConfigPool (configuration, conditions, counts)
-- MachineConfig (name/labels and configuration identity; limit payload collection)
-- Event (node/MCP condition changes)
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Normal Rollout Ambiguity:** Node `currentConfig != desiredConfig`, but annotation `state == "Working"` (update actively applying, not drifted). Report: `not_supported: node_actively_applying_update`.
+3. **Missing Node Record:** Degraded node is not found in KV Store. Report: `inconclusive: node_record_missing`.
+4. **Unidentifiable Drift File:** MCD reports drift but does not specify a valid file path in logs or annotations. Report: `inconclusive: drift_target_unidentified`.
 
-### Correlation rule
-Match MCD logs and drift/degraded messages to the same node and time; compare node current/desired config identifiers to the MCP desired configuration and available MachineConfig metadata.
+---
 
-### Diagnosis gate
-Do not infer drift merely because current and desired config differ during a normal rollout. Require MCD drift/degraded evidence or a sustained mismatch outside expected progression.
+## 6. Post-Remediation Verification Contract
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+Whether executed via AAP playbook or manual CLI, recovery MUST be proven using these exact signals:
 
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Config drift/MCD degraded**. Correlate MCD state/reason, node annotations and daemon logs with current rendered config. Distinguish drift from a transient update stage.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Node State Cleared:** `node.metadata.annotations['machineconfiguration.openshift.io/state'] == "Done"`.
+2. **MCP Degraded Cleared:** `mcp.status.conditions[?(@.type=="Degraded")].status == "False"`.
+3. **MCD Preflight Passing:** MCD logs in `index=ocp_logs` confirm verification pass without on-disk mismatch warnings.

@@ -1,11 +1,12 @@
 # MCO drain and MCP-stuck troubleshooting use-case pack
 
-This is an evidence-driven design pack for an OpenShift SRE diagnostic agent. It contains **15 use cases**, each with four dedicated documents:
+This is an evidence-driven design pack for an OpenShift SRE diagnostic agent. It contains **16 use cases**, each with five dedicated documents:
 
 - `SPEC.md`: trigger, scope, evidence contract, acceptance criteria and safety requirements.
 - `design.md`: diagnosis logic, evidence ordering, state model and decision paths.
 - `plan.md`: implementation phases, tasks, test coverage and rollout gates.
 - `skill.md`: agent-operational instructions, read-only commands, interpretation and escalation.
+- `eval.md`: offline evaluation test matrix, golden fixtures, scoring rubrics, and prohibited failure modes.
 
 ## Use cases
 
@@ -24,6 +25,7 @@ This is an evidence-driven design pack for an OpenShift SRE diagnostic agent. It
 - `13-os-pivot-reboot-failure`: OS pivot, reboot or post-reboot verification fails
 - `14-uncordon-or-drainer-annotation`: Drain completion annotation or uncordon coordination mismatch
 - `15-disk-pressure-host-resource`: Node disk pressure or host resource exhaustion stalls cleanup/update
+- `16-csi-max-volume-limit-exceeded`: CSI driver maximum volume capacity reached on candidate nodes (MAX_VOLUMES_PER_NODE)
 
 ## Operating principles
 
@@ -55,3 +57,4 @@ The pack utilizes a deterministic 10-node LangGraph design optimized for low-lat
 - `docs/OBSERVABILITY_REQUIREMENTS.md`: Streamlined Golden Six allowlist and OTel configuration.
 - `db/migrations/001_initial.sql`: PostgreSQL schema for incident memory and recommendations.
 - `tests/TEST_STRATEGY.md`: Acceptance, security, and integration testing gates.
+- `tests/EVALUATION_FRAMEWORK.md`: 4-tier continuous evaluation framework and CI/CD quality gates.

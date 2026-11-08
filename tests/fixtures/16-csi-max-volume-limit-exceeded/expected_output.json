@@ -1,0 +1,57 @@
+{
+  "investigation_status": "completed",
+  "classification": "supported",
+  "confidence": "high",
+  "lifecycle_stage": "migration",
+  "use_case_id": "16-csi-max-volume-limit-exceeded",
+  "target_context": {
+    "cluster_id": "ocp-prod-01",
+    "target_namespace": "virtual-machines",
+    "blocked_workload": "virt-launcher-db-vm-xyz",
+    "csi_driver": "ebs.csi.aws.com"
+  },
+  "root_cause": {
+    "summary": "Workload placement / VM live migration is blocked because all 10 candidate worker nodes have reached their maximum CSI volume attachment ceiling (200/200 volumes attached, headroom: 0) for driver ebs.csi.aws.com.",
+    "sub_branch": "3A_fleet_volume_capacity_exhaustion",
+    "evidence_citations": [
+      {
+        "source": "k8s_objects",
+        "resource": "Event",
+        "excerpt": "0/10 nodes are available: 10 node(s) exceed max volume count."
+      },
+      {
+        "source": "k8s_objects",
+        "resource": "CSINode",
+        "field": "spec.drivers[?(@.name=='ebs.csi.aws.com')].allocatable.count",
+        "value": 200
+      },
+      {
+        "source": "k8s_objects",
+        "resource": "VolumeAttachment",
+        "field": "attached_count_per_node",
+        "value": "200 across 10/10 candidate nodes"
+      }
+    ]
+  },
+  "remediation": {
+    "remediation_type": "MANUAL_CLI_RUNBOOK",
+    "playbook_match": false,
+    "playbook_id": null,
+    "risk_level": "medium",
+    "manual_cli_fallback": {
+      "pre_checks": [
+        "oc get events -n virtual-machines --field-selector reason=FailedScheduling",
+        "oc get volumeattachment -o custom-columns=NODE:.spec.nodeName,ATTACHED:.status.attached | sort | uniq -c",
+        "oc get csinode -o jsonpath='{range .items[*]}{.metadata.name}{\"\\t\"}{.spec.drivers[?(@.name==\"ebs.csi.aws.com\")].allocatable.count}{\"\\n\"}{end}'"
+      ],
+      "remediation_steps": [
+        "oc -n openshift-machine-api scale machineset/worker-us-east-1a --replicas=4"
+      ],
+      "safety_warning": "Scaling MachineSets incurs infrastructure cost. Verify cloud quota before scaling.",
+      "verification": [
+        "oc get pod virt-launcher-db-vm-xyz -n virtual-machines -o jsonpath='{.status.phase}'",
+        "oc get volumeattachment -o wide"
+      ]
+    }
+  }
+}

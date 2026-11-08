@@ -116,16 +116,17 @@ earliest=-1h latest=now
 
 ---
 
-## 4. Kubernetes Object Data Minimization (The "Golden Six")
+## 4. Kubernetes Object Data Minimization (Curated Allowlist)
 
-To prevent memory bloat in collectors and excessive ingest licensing costs in Splunk, object collection in `index=k8s_objects` is strictly limited to **6 essential objects**:
+To prevent memory bloat in collectors and excessive ingest licensing costs in Splunk, object collection in `index=k8s_objects` is strictly limited to curated essential objects:
 
 1. **`Pod`** (`core/v1`): Captures `finalizers`, `labels` (for selector resolution), and `deletionTimestamp`.
 2. **`PodDisruptionBudget`** (`policy/v1`): Captures `spec.selector` and `disruptionsAllowed`.
-3. **`Node`** (`core/v1`): Captures `metadata.annotations` (`desiredDrain`, `lastAppliedDrain`) and `spec.unschedulable`.
-4. **`VolumeAttachment`** (`storage.k8s.io/v1`): Captures `status.attachError` and `status.detachError`.
-5. **`MachineConfigPool`** (`machineconfiguration.openshift.io/v1`): Captures rollout state, machine counts, and paused flags.
-6. **`Event`** (`core/v1`): Chronological timeline of eviction and scheduling failures.
+3. **`Node`** (`core/v1`): Captures `metadata.annotations` (`desiredDrain`, `lastAppliedDrain`), `spec.unschedulable`, and attachable volume quotas.
+4. **`VolumeAttachment`** (`storage.k8s.io/v1`): Captures `status.attachError`, `status.detachError`, and per-node attached volume counts (UC 04, 16).
+5. **`MachineConfigPool`** (`machineconfiguration.openshift.io/v1`): Captures rollout state, machine counts, and paused flags (UC 10, 11, 12).
+6. **`MachineConfig`** (`machineconfiguration.openshift.io/v1`): Captures target file paths (`spec.config.storage.files[*].path`), systemd unit definitions, and kernel arguments with raw base64 contents stripped (UC 11, 12).
+7. **`Event`** (`core/v1`): Chronological timeline of eviction and scheduling failures.
 
 ### Explicitly Excluded Objects:
 * ❌ **Secrets and ConfigMaps:** Zero secret ingestion or credential capture.

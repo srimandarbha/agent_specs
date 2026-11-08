@@ -38,7 +38,7 @@
 - Release gate: run against fixtures first, then read-only staging cluster, then limited production observation. No remediation enabled in this scope.
 
 
-## Object observability integration tests across all 15 scenarios
+## Object observability integration tests across all 16 scenarios
 
 - Confirm the agent queries only Splunk MCP and Prometheus MCP; no Kubernetes API tool is required or invoked.
 - Confirm the separate collector emits allowlisted object snapshots, changes and Events with cluster ID, UID/resourceVersion where available, source event time, observation time and ingestion time.

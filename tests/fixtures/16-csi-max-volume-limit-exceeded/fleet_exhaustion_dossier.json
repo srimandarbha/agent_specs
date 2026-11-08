@@ -1,0 +1,48 @@
+{
+  "status": "ok",
+  "observed_at": "2026-11-08T10:30:00Z",
+  "execution_time_ms": 4100,
+  "records": [
+    {
+      "cluster_id": "ocp-prod-01",
+      "target_namespace": "virtual-machines",
+      "target_resource": "virt-launcher-db-vm-xyz",
+      "node_name": "worker-01.prod.rhocp",
+      "first_seen": "2026-11-08T10:15:00Z",
+      "last_seen": "2026-11-08T10:29:45Z",
+      "scheduler_denial_events": [
+        "0/10 nodes are available: 10 node(s) exceed max volume count."
+      ],
+      "objects_observed": [
+        "Event",
+        "Pod",
+        "CSINode",
+        "VolumeAttachment",
+        "Node"
+      ],
+      "blocked_workload": {
+        "name": "virt-launcher-db-vm-xyz",
+        "namespace": "virtual-machines",
+        "phase": "Pending",
+        "required_pvc": "db-vm-disk-pvc",
+        "csi_driver": "ebs.csi.aws.com"
+      },
+      "candidate_nodes_volume_tally": [
+        { "node": "worker-02.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-03.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-04.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-05.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-06.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-07.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-08.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-09.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-10.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 },
+        { "node": "worker-11.prod.rhocp", "max_volumes": 200, "attached_volumes": 200, "headroom": 0 }
+      ],
+      "csinode_allocatable_snapshot": {
+        "driver_name": "ebs.csi.aws.com",
+        "allocatable_count": 200
+      }
+    }
+  ]
+}

@@ -1,119 +1,184 @@
-# Skill: Diagnose OpenShift Virtualization VM is not live-migratable
+# Skill: Fail-Proof Diagnosis for OpenShift Virtualization VM Not Live-Migratable (`05-ocv-vm-not-migratable`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **openshift virtualization vm is not live-migratable**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get vmi -A -o wide
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` (cordoned), and MCO is draining the node. | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | MCC eviction log matches: `(?i)(virt-launcher-eviction-interceptor.*not live-migratable|cannot migrate vmi|VMI is configured with an eviction strategy but is not live-migratable)` OR Prometheus metric `kubevirt_vmi_non_evictable > 0`. | Exit: `not_supported: no_vmi_migration_block_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get vmi <vmi> -n <namespace> -o yaml
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract VM & Interceptor Rejection]  [No Eviction Interceptor Error]
+            Pod name, namespace, VM name, denial reason  ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: Prometheus Metric & Reason Evaluation]
+            Query kubevirt_vmi_non_evictable{vmi=vm_name}
+                         │
+         ┌───────────────┼───────────────────────────────┐
+         ▼               ▼                               ▼
+  [DisksNotMigratable]   [HostDevicesNotMigratable]      [NoDestinationNode]
+  Non-shared storage /   PCI passthrough / GPU /         Target capacity, affinity,
+  local RWO PVC          SR-IOV binding                  or CPU model mismatch
+         │                       │                               │
+         ▼                       ▼                               ▼
+  Branch 3A: Storage     Branch 3B: Host Device          Branch 3C: Target Scheduling
+  Constraint             Binding                         Deadlock
 ```
-```bash
-oc get vm <vm> -n <namespace> -o yaml
+
+### Step 1: Extract VM & Interceptor Rejection
+1. Extract `target_namespace`, `failing_pod_name`, and eviction denial message from MCC logs in `ocp_logs`:
+   ```regex
+   (?i)Cannot evict pod "(?<target_namespace>[^/]+)/(?<failing_pod_name>virt-launcher-[^"]+)".*virt-launcher-eviction-interceptor.*"(?<denial_reason>[^"]+)"
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`:
+   * Confirm Pod label `kubevirt.io == "virt-launcher"`.
+   * Extract VM name from Pod label `vm.kubevirt.io/name`.
+
+### Step 2: Correlate Prometheus OCV Metrics
+1. Inspect `index=ocp_metrics` for the target VM:
+   * Query: `kubevirt_vmi_non_evictable{vmi="<vm_name>"}`:
+     * Label `reason`: `DisksNotMigratable`, `HostDevicesNotMigratable`, `InternalError`.
+   * Query: `kubevirt_vmi_migration_status{vmi="<vm_name>"}`:
+     * Status `Failed` with reason `TargetNodeNotSchedulable`, `MigrationNetworkDegraded`, or `Cancelled`.
+
+---
+
+## 3. Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get vmim -A
+                            [VM Live Migration Blocked]
+                                         │
+            ┌────────────────────────────┼────────────────────────────┐
+            ▼                            ▼                            ▼
+  [Branch 3A: Local Storage]   [Branch 3B: Host Devices]    [Branch 3C: No Target Node]
+  Non-shared disk (RWO local   PCI/GPU/SR-IOV hardware      Affinity, CPU model, or
+  PV, hostPath, or clone disk) passthrough pinned to host   capacity exhaustion on target
+            │                            │                            │
+            ▼                            ▼                            ▼
+  Playbook: null (Data Risk)   Playbook: null (Hardware)    Playbook: null (Capacity)
+  CLI Fallback: Storage Plan   CLI Fallback: Hardware Audit CLI Fallback: Capacity Check
 ```
-```bash
-oc get pvc -n <namespace> -o wide
+
+* **Branch 3A: Non-Shared Storage / Local PV Disk Constraint**
+  * *Evidence:* Prometheus metric `kubevirt_vmi_non_evictable{reason="DisksNotMigratable"} == 1` OR `virt-handler` logs show: `cannot migrate VMI with non-shared storage; volume is ReadWriteOnce or hostPath`.
+  * *Diagnosis:* Live migration requires storage to be shared across nodes (e.g. Ceph RBD / CephFS in `ReadWriteMany` mode or SAN shared block). The VM is attached to a local disk or non-sharable volume.
+  * *Remediation Route:* **DO NOT forcefully delete the pod or mutate eviction strategy autonomously.** Route to **Manual CLI Fallback** for storage owner coordination or controlled guest shutdown.
+
+* **Branch 3B: Host Device Binding / PCI Passthrough / GPU Pinning**
+  * *Evidence:* Prometheus metric `kubevirt_vmi_non_evictable{reason="HostDevicesNotMigratable"} == 1` OR `virt-handler` logs report `VMI has assigned hostDevices: pci/gpu`.
+  * *Diagnosis:* The virtual machine is bound to physical hardware on the draining node (e.g. Nvidia GPU, vGPU, or specialized PCIe device) that cannot be migrated across hypervisors over the network.
+  * *Remediation Route:* **Manual CLI Fallback**. Requires scheduled maintenance window to shut down the VM, allow node update, and restart.
+
+* **Branch 3C: Destination Node Scheduling Deadlock / Capacity Starvation**
+  * *Evidence:* Prometheus metric `kubevirt_vmi_migration_status{status="failed"}` with reason `NoNodesAvailable`, or virt-controller logs report `0/N nodes available: Insufficient cpu/memory` or `node affinity mismatch`. *(Note: If target node scheduling failure specifically cites `node(s) exceed max volume count`, immediately route diagnosis to `16-csi-max-volume-limit-exceeded`)*.
+  * *Diagnosis:* The VM is migratable in principle, but no other node in the cluster satisfies its CPU model requirements, NUMA constraints, or memory footprint.
+  * *Remediation Route:* **Manual CLI Fallback (Cluster Capacity / Node Affinity Audit)**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Absolute Safety Rule on Virtual Machines
+> [!CAUTION]
+> The diagnostic agent MUST NEVER execute autonomous playbooks to patch VM eviction strategies (`evictionStrategy: None`), power off virtual machines (`virtctl stop`), or force-delete `virt-launcher` pods. Doing so without application-owner sign-off will cause unrecoverable guest filesystem damage or enterprise service outages.
+
+### Rule 1: Manual CLI Fallback Generation (Branch 3A - Non-Shared Storage)
+**Triggered when:** VM is blocked by non-shared storage disks.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "VM uses non-shared storage disks; live migration is impossible without shared storage or scheduled shutdown.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Inspect VMI non-migratable conditions and disk attachments:",
+      "oc -n {{ target_namespace }} get vmi {{ vm_name }} -o jsonpath='{.status.conditions[?(@.type==\"LiveMigratable\")].message}{\"\\n\"}'",
+      "# 2. List PVCs used by this virtual machine and their access modes:",
+      "oc -n {{ target_namespace }} get pvc -l vm.kubevirt.io/name={{ vm_name }}"
+    ],
+    "remediation_steps": [
+      "# Option A (Recommended for planned upgrades): Perform controlled shutdown with workload owner:",
+      "virtctl stop {{ vm_name }} -n {{ target_namespace }}",
+      "# Option B (If VM is stateless): Temporarily change eviction strategy to allow node drain:",
+      "# oc -n {{ target_namespace }} patch vm {{ vm_name }} --type=merge -p '{\"spec\":{\"template\":{\"spec\":{\"evictionStrategy\":\"None\"}}}}'"
+    ],
+    "safety_warning": "Option A stops the VM guest OS. Ensure workload owner sign-off and valid database backups exist before stopping.",
+    "verification": [
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}",
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'"
+    ]
+  }
+}
 ```
-```bash
-oc describe vmi <vmi> -n <namespace>
+
+---
+
+### Rule 2: Manual CLI Fallback Generation (Branch 3B - Host Devices / GPU)
+**Triggered when:** VM has PCI / GPU passthrough bindings.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "VM is hardware-bound to host GPU/PCI devices; requires controlled power-off for host maintenance.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Check hardware devices assigned to the VM:",
+      "oc -n {{ target_namespace }} get vm {{ vm_name }} -o jsonpath='{.spec.template.spec.domain.devices.hostDevices}{\"\\n\"}'"
+    ],
+    "remediation_steps": [
+      "# 2. Schedule maintenance window and stop the VM gracefully:",
+      "virtctl stop {{ vm_name }} -n {{ target_namespace }}",
+      "# 3. Once node maintenance is complete, restart the VM:",
+      "virtctl start {{ vm_name }} -n {{ target_namespace }}"
+    ],
+    "safety_warning": "GPU workloads cannot live-migrate. Stopping the VM will terminate running GPU jobs.",
+    "verification": [
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: MCC eviction error names `virt-launcher-eviction-interceptor.kubevirt.io` and says VMI is configured with an eviction strategy but is not live-migratable.
-5. Validate the primary cause using these evidence sources: VMI conditions and migration state; VM/VMI eviction strategy; PVC/PV mode and backend capability; migration network; destination-node compatibility; VMIM history.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Determine the exact `LiveMigratable` condition/reason. Correct the supported storage, network, CPU or scheduling constraint, or plan a controlled VM shutdown/restart with the application owner if migration is not possible. Do not change eviction strategy blindly.
-8. Explain the operational risk: Forcing eviction may interrupt a VM and its guest workload. Validate backup, guest/application recovery, maintenance window, and owner approval before a non-migrating shutdown path.
-9. Define verification using: VMI is eligible for live migration and migration completes, or an approved maintenance plan safely stops the VM; MCC drain and VM health both recover.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-## Kubernetes object observability requirements
+1. **Telemetry Ingestion Failure:** Splunk multi-index query fails or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing VM Pod:** Pod named in MCC log is not found in `k8s_objects` or KV Store. Report: `inconclusive: virt_launcher_pod_missing`.
+3. **VM Already Stopped:** The VM has already been shut down between drain timeout and agent execution. Report: `not_supported: vm_already_stopped`.
+4. **Transient Network Error:** Live migration failed due to transient network timeout, but VMI reports `LiveMigratable: True`. Report: `probable: transient_migration_network_timeout`.
 
-**Scenario:** OpenShift Virtualization VM not live-migratable
+---
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+## 6. Post-Remediation Verification Contract
 
-### Required object evidence
-- VirtualMachineInstance (namespace/name/UID, node assignment, phase, conditions, launcher Pod relationship)
-- VirtualMachine (namespace/name, runStrategy/running state and eviction strategy fields relevant to the installed API)
-- VirtualMachineInstanceMigration (VMI reference, phase, conditions, start/completion times, failure reason)
-- Pod (virt-launcher identity, nodeName, labels, owner references, readiness)
-- PDB (when applicable) and Event
-- DataVolume/PVC when disk or storage readiness is implicated
+Whether executed via controlled shutdown or storage migration, recovery MUST be proven using these exact signals:
 
-### Correlation rule
-Correlate MCC drain logs with the VMI and virt-launcher Pod on the affected node, migration object status and timestamps, and any relevant VM/PDB/storage conditions. Validate fields against installed KubeVirt/OCV APIs.
-
-### Diagnosis gate
-Do not infer “not migratable” solely from VMI phase or VM existence. Require a failed/blocked migration reason or explicit migration capability/constraint evidence correlated to the drain window.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **OCV VM not live-migratable**. Read VM/VMI state, eviction strategy, migration policy, events and relevant virt-handler/migration logs. Do not patch VM policy or force-stop a VM.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **Launcher Eviction Complete:** The `virt-launcher` pod on the draining node terminates and is removed from `index=k8s_objects` / KV Store.
+2. **MCC Drain Resumes:** `index=ocp_logs` records MCC advancing node drain past the virtual machine.
+3. **Workload Restored Post-Maintenance:** Post-maintenance logs confirm VM successfully migrated to another node or restarted upon uncordon.
