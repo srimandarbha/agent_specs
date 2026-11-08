@@ -164,3 +164,14 @@ To prevent memory bloat in collectors and excessive ingest licensing costs in Sp
 * [ ] Query execution time in Splunk completes in **< 15 seconds** for a 1-hour window.
 * [ ] PDB-blocked drain stalls are diagnosed with confirmed root cause (identifying both the PDB and the failing pod/replicas) from the single returned dossier.
 * [ ] Zero Secret, ConfigMap, or credential payloads are ingested or parsed in Splunk.
+---
+
+## 8. Architecture clarification and precedence (2026-11-08)
+
+This section supersedes earlier wording that assumes one Splunk round-trip can retrieve every evidence type. The default deployed evidence topology has separate Splunk MCP and Prometheus MCP adapters. Splunk contains logs and only those Kubernetes object snapshots/events that the telemetry pipeline has actually indexed; Prometheus MCP remains the metric source unless metrics centralization in Splunk has been explicitly deployed and contract-tested.
+
+The agent queries the required adapters within one absolute investigation deadline, then passes normalized evidence to a deterministic correlation engine. One network call is not an architectural correctness requirement. A single Splunk multi-index query is an optimization available only in a deployment where the required logs, objects and metrics are all queryable through that Splunk backend.
+
+The old fixed “Golden Six” label is retired. Use the common baseline plus per-use-case allowlist in `docs/OBSERVABILITY_MATRIX.md`. The original list contained seven resource kinds and omitted required resources such as Lease and CSINode.
+
+The `<10s` or `<15s` search targets are performance objectives pending benchmark, not guarantees. Measure each adapter, end-to-end collection, LLM and persistence latency under expected concurrency. Never treat a failed adapter query or missing object history as an empty successful result.

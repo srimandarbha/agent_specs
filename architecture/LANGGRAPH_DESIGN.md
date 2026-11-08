@@ -149,3 +149,12 @@ class InvestigationState(BaseModel):
 2. **Hardcoded Playbook Disablement for Unknowns:** Track B physically enforces `playbook_match = False` and `playbook_id = null`. Automated playbooks are strictly barred from executing on unclassified anomalies.
 3. **Auditability:** Every diagnosis outputs exact timestamped log lines, object resourceVersions, and metric values supporting the conclusion.
 4. **PostgreSQL System of Record:** Metadata, hypotheses, and generated remediation specs are persisted to PostgreSQL using [`db/migrations/001_initial.sql`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/db/migrations/001_initial.sql).
+---
+
+## 11. Federated evidence adapter clarification (2026-11-08)
+
+The Track A path must not assume every required signal is indexed in Splunk. In the default deployment, `query_unified_splunk_dossier` retrieves indexed logs/object snapshots/events through Splunk MCP, while a separate Prometheus MCP adapter retrieves metric evidence. The evidence aggregation/correlation layer joins these responses into the canonical dossier. The one-query-per-investigation pattern is available only where adapter capabilities prove that all required evidence has been centralized in Splunk.
+
+The previous “max 2 Splunk calls” budget is scoped to Splunk requests and is not a total multi-adapter budget. The default Track A budget is one initial Splunk query, one initial Prometheus query, at most one targeted logical follow-up across either adapter, and at most one transient retry across the entire investigation. Count every transport attempt; do not exceed four external request attempts or the 45-second absolute deadline. Track B performs one bounded broad query and at most one transient retry, with one LLM synthesis call and no iterative tool loop.
+
+All latency figures remain targets until measured at expected concurrency.

@@ -204,3 +204,12 @@ Returned by Node 9b (`format_sre_briefing`) when the incident does not match any
 * **Transient Failures:** Retry HTTP 429, 502, 503, 504 at most once with exponential backoff (1s, 2s) + jitter.
 * **Non-Retryable Errors:** Immediately halt and report `inconclusive` on authentication, permission denied, or malformed queries.
 * **Budget Exhaustion:** If the Splunk query times out or fails after retry, return an explicit tool error record. Never fabricate an empty result as "no issue found".
+---
+
+## 6. Adapter contract clarification
+
+The logical evidence adapters are `splunk_mcp` and `prometheus_mcp` by default. Actual MCP tool names and payload schemas must be discovered and pinned during integration; this repository does not assume tool names not yet verified. See `contracts/MCP_INTEGRATION.md` and `contracts/EVIDENCE_SCHEMA.md`.
+
+A two-call total budget is not compatible with independent adapters plus an optional follow-up. Use per-adapter budgets and one global deadline. The baseline is one Splunk call and one Prometheus call when both evidence classes are required, with at most one narrowly justified follow-up if budget remains. Track B uses one bounded query and one synthesis call. A deployment that centralizes metrics in Splunk may use a different, explicitly tested budget.
+
+The SPL sample in `intent.md` is illustrative and must not be treated as a correct resource-join implementation. Resource joins belong in the deterministic correlation engine; see `contracts/CORRELATION_ENGINE.md`.

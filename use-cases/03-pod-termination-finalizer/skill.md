@@ -202,3 +202,6 @@ Whether executed via operator recovery or human CLI steps, recovery MUST be prov
 1. **Pod Record Evaporation:** Target pod no longer exists in `index=k8s_objects` / KV Store lookup for the target cluster and namespace.
 2. **Kubelet Clean Slate:** No new `FailedKillPod` events emitted for the affected pod UID in `index=k8s_objects` (Events).
 3. **MCO Drain Resumes:** `index=ocp_logs` records MCC advancing node drain (e.g. `evicting next pod` or `drain complete for node`).
+## Shared remediation catalog clarification (2026-11-08)
+
+The `playbook_restart_csi_driver` handoff is permitted only when current evidence confirms the CSI node-driver daemon/RPC failure branch (CSI RPC timeout or equivalent driver failure) and the workload is safe for that operation. Generic custom finalizers, `pvc-protection` without a proven CSI driver fault, host process hangs and ambiguous volume state must remain manual/inconclusive. Never remove finalizers through this playbook. The shared catalog now maps UC03 to this playbook only for that narrow branch.

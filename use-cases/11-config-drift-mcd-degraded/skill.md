@@ -182,3 +182,6 @@ Whether executed via AAP playbook or manual CLI, recovery MUST be proven using t
 1. **Node State Cleared:** `node.metadata.annotations['machineconfiguration.openshift.io/state'] == "Done"`.
 2. **MCP Degraded Cleared:** `mcp.status.conditions[?(@.type=="Degraded")].status == "False"`.
 3. **MCD Preflight Passing:** MCD logs in `index=ocp_logs` confirm verification pass without on-disk mismatch warnings.
+## Service allowlist clarification (2026-11-08)
+
+Only service names declared in the catalog are eligible for the service-restart recommendation, and each uses its service-specific risk profile. A failed auxiliary service such as `chronyd` is not equivalent to restarting `crio`, `kubelet` or `systemd-journald`; the latter require high-risk human approval and their own preconditions. File drift, immutable OS corruption and ambiguous MCD degradation never match a service-restart playbook.

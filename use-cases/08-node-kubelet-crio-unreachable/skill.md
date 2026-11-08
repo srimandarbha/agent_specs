@@ -205,3 +205,6 @@ Whether executed via AAP playbook or manual CLI, recovery MUST be proven using t
 1. **Node Condition Restored:** `node.status.conditions[?(@.type=="Ready")].status == "True"`.
 2. **Lease Renewal Fresh:** `kube-node-lease` for the node reports `renewTime` within the last 40 seconds.
 3. **MCO Resumption:** `index=ocp_logs` records MCC resuming drain or MachineConfigDaemon applying updates on the restored node.
+## Critical service restart profile (2026-11-08)
+
+`kubelet` and `crio` are critical platform services, not non-critical helpers. A restart recommendation requires a confirmed service process failure, reachable host, node cordoned, certificate/CSR and network-partition causes ruled out, storage/workload impact reviewed, and explicit human approval under the catalog high-risk profile. Never restart a service based only on a missing heartbeat or stale Lease.

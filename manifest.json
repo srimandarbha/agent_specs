@@ -1,16 +1,17 @@
 {
   "pack": "mco-drain-troubleshooting-pack",
-  "revision": "enhanced-2026-11-08",
+  "revision": "enhanced-2026-11-08-contract-update-1",
   "operating_decisions": {
     "trigger": [
       "alert",
       "manual"
     ],
     "evidence": [
-      "splunk_mcp"
+      "splunk_mcp",
+      "prometheus_mcp"
     ],
-    "telemetry_architecture": "unified_splunk_multi_index_with_kv_store",
-    "k8s_objects_allowlist": "curated_core_with_machineconfigs",
+    "telemetry_architecture": "federated_splunk_prometheus_adapters_with_optional_splunk_metrics",
+    "k8s_objects_allowlist": "common_baseline_plus_per_use_case_allowlist",
     "remediation_model": "ansible_catalog_with_cli_fallback",
     "mode": "diagnosis_and_recommendations_only",
     "use_case_count": 16,
@@ -194,5 +195,23 @@
     "tests/TEST_STRATEGY.md",
     "tests/EVALUATION_FRAMEWORK.md",
     "tests/fixtures/pdb-blocked.json"
-  ]
+  ],
+  "schema_version": "1.0",
+  "shared_contracts": {
+    "event": "contracts/EVENT_CONTRACT.md",
+    "evidence": "contracts/EVIDENCE_SCHEMA.md",
+    "correlation": "contracts/CORRELATION_ENGINE.md",
+    "mcp_integration": "contracts/MCP_INTEGRATION.md",
+    "observability_matrix": "docs/OBSERVABILITY_MATRIX.md",
+    "security": "docs/SECURITY_MODEL.md",
+    "security_review_checklist": "docs/SECURITY_REVIEW_CHECKLIST.md",
+    "version_compatibility": "docs/VERSION_COMPATIBILITY.md",
+    "model_policy": "docs/MODEL_AND_PROMPT_POLICY.md",
+    "cluster_registry": "docs/CLUSTER_REGISTRY.md",
+    "skill_loader": "docs/SKILL_LOADER.md",
+    "deployment": "docs/DEPLOYMENT.md",
+    "agent_observability": "docs/AGENT_OBSERVABILITY.md",
+    "remediation_execution": "remediations/REMEDIATION_EXECUTION.md",
+    "development_blueprint": "DEVELOPMENT_BLUEPRINT.md"
+  }
 }

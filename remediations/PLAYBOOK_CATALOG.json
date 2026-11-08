@@ -2,7 +2,9 @@
   {
     "playbook_id": "playbook_pdb_scale_up",
     "playbook_file": "playbooks/remediate-pdb-scale-up.yml",
-    "supported_use_cases": ["01-pdb-eviction-blocked"],
+    "supported_use_cases": [
+      "01-pdb-eviction-blocked"
+    ],
     "description": "Temporarily scales up a Deployment or StatefulSet by +1 replica to satisfy PodDisruptionBudget minAvailable constraints during node drain.",
     "risk_level": "low",
     "requires_human_approval": true,
@@ -52,7 +54,10 @@
   {
     "playbook_id": "playbook_restart_csi_driver",
     "playbook_file": "playbooks/remediate-restart-csi-driver.yml",
-    "supported_use_cases": ["04-storage-unmount-detach"],
+    "supported_use_cases": [
+      "04-storage-unmount-detach",
+      "03-pod-termination-finalizer"
+    ],
     "description": "Restarts a stalled CSI storage node-driver daemon pod on the draining node to clear locked volume unmounts.",
     "risk_level": "low",
     "requires_human_approval": true,
@@ -101,7 +106,9 @@
   {
     "playbook_id": "playbook_reconcile_drain_annotation",
     "playbook_file": "playbooks/remediate-drain-annotation.yml",
-    "supported_use_cases": ["14-uncordon-or-drainer-annotation"],
+    "supported_use_cases": [
+      "14-uncordon-or-drainer-annotation"
+    ],
     "description": "Reconciles MCO drain annotations on a node when external actors uncordoned the node prematurely or an annotation race condition occurred.",
     "risk_level": "low",
     "requires_human_approval": true,
@@ -143,7 +150,9 @@
   {
     "playbook_id": "playbook_unpause_mcp",
     "playbook_file": "playbooks/remediate-unpause-mcp.yml",
-    "supported_use_cases": ["10-mcp-paused-or-coordination"],
+    "supported_use_cases": [
+      "10-mcp-paused-or-coordination"
+    ],
     "description": "Unpauses a MachineConfigPool after confirming all maintenance prerequisites and availability constraints are met.",
     "risk_level": "medium",
     "requires_human_approval": true,
@@ -191,7 +200,9 @@
   {
     "playbook_id": "playbook_cleanup_stale_virt_launcher",
     "playbook_file": "playbooks/remediate-stale-virt-launcher.yml",
-    "supported_use_cases": ["06-ocv-stale-virt-launcher"],
+    "supported_use_cases": [
+      "06-ocv-stale-virt-launcher"
+    ],
     "description": "Cleans up an orphaned virt-launcher pod on the source node after confirming the VM live migration has completely succeeded on the target node.",
     "risk_level": "medium",
     "requires_human_approval": true,
@@ -241,8 +252,11 @@
   {
     "playbook_id": "playbook_restart_failed_systemd_unit",
     "playbook_file": "playbooks/remediate-restart-systemd-unit.yml",
-    "supported_use_cases": ["08-node-kubelet-crio-unreachable", "11-config-drift-mcd-degraded"],
-    "description": "Restarts a failed non-critical host service (e.g. chronyd, crio journal vacuum) that triggered an MCD degraded condition.",
+    "supported_use_cases": [
+      "08-node-kubelet-crio-unreachable",
+      "11-config-drift-mcd-degraded"
+    ],
+    "description": "Restarts only an explicitly allowlisted host service after service-specific preconditions and human approval. Critical services (crio, kubelet, systemd-journald) require high-risk approval; this is not a generic non-critical service restart.",
     "risk_level": "medium",
     "requires_human_approval": true,
     "preconditions": [
@@ -269,6 +283,54 @@
       "      register: unit_status",
       "      failed_when: unit_status.status.ActiveState != 'active'"
     ],
-    "verification_goal": "systemd_service_active == true and mcd_degraded == false"
+    "verification_goal": "systemd_service_active == true and mcd_degraded == false",
+    "allowed_services": [
+      "chronyd",
+      "crio",
+      "kubelet",
+      "systemd-journald"
+    ],
+    "service_profiles": {
+      "chronyd": {
+        "risk_level": "medium",
+        "requires_human_approval": true,
+        "preconditions": [
+          "node_is_cordoned",
+          "host_is_reachable",
+          "service_failure_is_confirmed",
+          "no_active_maintenance_conflict"
+        ]
+      },
+      "crio": {
+        "risk_level": "high",
+        "requires_human_approval": true,
+        "preconditions": [
+          "node_is_cordoned",
+          "host_is_reachable",
+          "runtime_failure_is_confirmed",
+          "workload_and_storage_impact_reviewed"
+        ]
+      },
+      "kubelet": {
+        "risk_level": "high",
+        "requires_human_approval": true,
+        "preconditions": [
+          "node_is_cordoned",
+          "host_is_reachable",
+          "kubelet_failure_is_confirmed",
+          "certificate_or_api_auth_failure_is_ruled_out"
+        ]
+      },
+      "systemd-journald": {
+        "risk_level": "high",
+        "requires_human_approval": true,
+        "preconditions": [
+          "node_is_cordoned",
+          "host_is_reachable",
+          "journal_service_failure_is_confirmed",
+          "log_collection_impact_is_accepted"
+        ]
+      }
+    }
   }
 ]

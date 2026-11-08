@@ -58,3 +58,16 @@ The pack utilizes a deterministic 10-node LangGraph design optimized for low-lat
 - `db/migrations/001_initial.sql`: PostgreSQL schema for incident memory and recommendations.
 - `tests/TEST_STRATEGY.md`: Acceptance, security, and integration testing gates.
 - `tests/EVALUATION_FRAMEWORK.md`: 4-tier continuous evaluation framework and CI/CD quality gates.
+## Shared implementation contracts (2026-11-08 update)
+
+The 16 scenario packs are retained. The shared engineering contracts now live in:
+
+- `DEVELOPMENT_BLUEPRINT.md`: end-to-end runtime lifecycle and build gates.
+- `GAP_ANALYSIS.md`: verified repository gaps and readiness assessment.
+- `contracts/EVENT_CONTRACT.md`, `EVIDENCE_SCHEMA.md`, `CORRELATION_ENGINE.md`, and `MCP_INTEGRATION.md`.
+- `docs/OBSERVABILITY_MATRIX.md`: per-use-case Kubernetes object, metric, log and freshness matrix.
+- `docs/SECURITY_MODEL.md`, `MODEL_AND_PROMPT_POLICY.md`, `VERSION_COMPATIBILITY.md`, `CLUSTER_REGISTRY.md`, `SKILL_LOADER.md`, `DEPLOYMENT.md`, and `AGENT_OBSERVABILITY.md`.
+- `remediations/REMEDIATION_EXECUTION.md`: recommendation and later AAP handoff contract.
+- `db/migrations/002_agent_contracts.sql`: additive persistence/audit changes.
+
+The evidence path is federated by default: Splunk MCP for indexed logs/objects and Prometheus MCP for metrics. A centralized Splunk-metrics topology is an optional deployment profile. The agent remains read-only.

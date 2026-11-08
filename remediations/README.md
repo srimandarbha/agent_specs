@@ -61,3 +61,8 @@ If an incident does not match any approved catalog entry (or involves dangerous 
 * **Exact Command:** The safe, scoped `oc` command to execute.
 * **Safety Warnings & Rollback Plan:** Explicit risks and rollback instructions.
 * **Post-Verification:** Command to prove the drain progressed.
+## Catalog contract update
+
+The detailed approval and later AAP integration lifecycle is specified in `REMEDIATION_EXECUTION.md`. Day-1 output is recommendation-only pseudocode and is not an executable playbook. Catalog paths do not prove that playbook YAML exists.
+
+The catalog must map UC03 to `playbook_restart_csi_driver` only for a proven CSI node-driver/RPC failure. The systemd restart entry must use an explicit per-service allowlist and service-specific safety profiles; `kubelet` and `crio` are critical platform services and must not inherit a generic non-critical-service policy.

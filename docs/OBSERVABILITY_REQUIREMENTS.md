@@ -1,101 +1,26 @@
-# Observability Requirements: Streamlined Multi-Cluster Telemetry for MCO Drain
+# Observability Requirements
 
-**Status:** Approved Architectural Direction  
-**Scope:** OpenShift Fleet (150+ clusters)  
-**Evidence Pipeline:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects`, `ocp_metrics`) with KV Store state caching  
-**Agent Operating Mode:** Read-only diagnosis and structured remediation specification (Ansible Playbook / CLI fallback)
+The canonical requirement is now a **common baseline plus per-use-case object allowlist**, not a fixed Golden Six. The previous list actually named seven resource kinds and omitted objects explicitly required by several scenarios.
 
----
+See [`OBSERVABILITY_MATRIX.md`](OBSERVABILITY_MATRIX.md) for the authoritative mapping of all 16 use cases to Kubernetes objects, fields, logs, metrics, freshness rules and collector safeguards.
 
-## 1. Evidence Architecture Overview
+## Evidence source topology
 
-To eliminate collector memory bloat, high etcd churn, and high Splunk ingest costs:
-1. **Logs & Metrics Remain Primary:** Container logs (MCC, MCD, Kubelet) and Prometheus metrics (`kube-state-metrics`, KubeVirt metrics) provide 80%+ of all diagnostic signals.
-2. **Curated Kubernetes Object Allowlist:** Object collection is strictly restricted to essential diagnostic types. Heavy virtualization CRDs (`VirtualMachine`, `DataVolume`, `VMIM`) are dropped, and `MachineConfig` objects have raw base64 file payloads stripped.
-3. **Field Pruning at Ingestion:** `metadata.managedFields`, container environment variables, and `spec.config.storage.files[*].contents` are stripped by OpenTelemetry, reducing JSON payload size by 65%+ and preventing collector OOMKills.
-4. **Zero-Compute State (Splunk KV Store):** Static and slow-changing objects (PDBs, Nodes) are maintained in a Splunk KV Store (`k8s_live_inventory_lookup`) to guarantee full state visibility with zero index bucket scanning.
+The default deployment uses two independently queried evidence adapters:
 
----
+- Splunk MCP: logs, audit records, Events and Kubernetes object snapshots/changes when those datasets are actually ingested.
+- Prometheus MCP: metric queries.
 
-## 2. The Core Kubernetes Object Allowlist
+Centralizing metrics into Splunk is permitted as an alternative deployment profile, but must be declared in `manifest.json` and proven by adapter capability tests. Do not assume Prometheus metrics are available through Splunk just because the architecture diagram has one search box.
 
-| Object Kind | API Group / Version | What It Provides That Metrics/Logs Cannot | Excluded Fields |
-|---|---|---|---|
-| **`Pod`** | `core/v1` | `metadata.finalizers` (UC 03), `metadata.labels` for PDB selector matching (UC 01), `metadata.deletionTimestamp`. | `metadata.managedFields`, `spec.containers[*].env`, `spec.containers[*].envFrom` |
-| **`PodDisruptionBudget`** | `policy/v1` | `spec.selector` (resolves which PDB owns a pod when multiple PDBs exist in a namespace). | `metadata.managedFields` |
-| **`Node`** | `core/v1` | `metadata.annotations`: MCO drain coordination keys (`desiredDrain` vs `lastAppliedDrain` in UC 14), `spec.unschedulable`. | `metadata.managedFields`, `status.images` |
-| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04, 16). | `metadata.managedFields` |
-| **`MachineConfigPool`** | `machineconfiguration.openshift.io/v1` | Current vs. desired rendered config references, pool rollout progress, and paused flags (UC 10, 11, 12). | `metadata.managedFields` |
-| **`MachineConfig`** | `machineconfiguration.openshift.io/v1` | Target file paths (`spec.config.storage.files[*].path`), systemd unit definitions (`spec.config.systemd.units`), kernel arguments (`spec.kernelArguments`), and OS image URL for diagnosing config drift and render collisions (UC 11, 12). | `metadata.managedFields`, `spec.config.storage.files[*].contents` (raw base64 file payloads stripped to prevent collector OOMs and Splunk index bloat) |
-| **`Event`** | `core/v1` | Fast chronological timeline of eviction denials and scheduling rejections. | None |
+## Mandatory collector identity fields
 
----
+Every object record must include `cluster_id`, API group/version, kind, namespace where applicable, name, UID, resourceVersion where available, event time, observation time and ingestion time. Deletions/tombstones or periodic authoritative snapshots are required to distinguish deletion from missing collection.
 
-## 3. Explicitly Excluded Objects (What NOT to Ingest)
+## Security
 
-* ❌ **`VirtualMachine`, `VirtualMachineInstance`, `DataVolume`, `VMIM`:** OpenShift Virtualization is fully diagnosed via Prometheus metrics (`kubevirt_vmi_non_evictable`, `kubevirt_vmi_migration_*`) and the KubeVirt eviction interceptor logs in Splunk.
-* ❌ **`Secrets` and `ConfigMaps`:** Strictly prohibited by InfoSec policy; zero credential ingestion.
-* ❌ **`DaemonSets`:** MCO drain helper has `--ignore-daemonsets=true` hardcoded; DaemonSets are never evicted during drain.
-* ❌ **`PersistentVolume` (PV):** PVC and `VolumeAttachment` provide complete diagnostic signal.
-* ❌ **`Service` and `EndpointSlice`:** Webhook reachability errors are logged directly in API server logs.
+The collector has list/watch access only to approved object types. Secrets and credential-bearing fields are prohibited. Strip `metadata.managedFields`, environment variable values, raw MachineConfig file contents, webhook CA bundles and all credentials. The diagnostic agent itself has no Kubernetes API credentials or write permissions.
 
----
+## Freshness
 
-## 4. OpenTelemetry Collector Configuration (`k8sobjectsreceiver`)
-
-Deploy this lightweight configuration across spoke clusters to stream object state safely without OOMKills:
-
-```yaml
-receivers:
-  k8sobjects:
-    auth_type: serviceAccount
-    objects:
-      - name: pods
-        mode: watch
-        exclude:
-          - metadata.managedFields
-          - spec.containers[*].env
-          - spec.containers[*].envFrom
-
-      - name: poddisruptionbudgets
-        group: policy
-        mode: watch
-        exclude:
-          - metadata.managedFields
-
-      - name: nodes
-        mode: watch
-        exclude:
-          - metadata.managedFields
-          - status.images
-
-      - name: volumeattachments
-        group: storage.k8s.io
-        mode: watch
-        exclude:
-          - metadata.managedFields
-
-      - name: machineconfigpools
-        group: machineconfiguration.openshift.io
-        mode: watch
-        exclude:
-          - metadata.managedFields
-
-      - name: machineconfigs
-        group: machineconfiguration.openshift.io
-        mode: watch
-        exclude:
-          - metadata.managedFields
-          - spec.config.storage.files[*].contents
-
-      - name: events
-        mode: watch
-```
-
----
-
-## 5. Splunk Ingestion & KV Store Architecture
-
-1. **`index=k8s_objects`:** Stores incoming pruned JSON snapshots/events from OpenTelemetry (short 7-day retention).
-2. **`k8s_live_inventory_lookup` (KV Store):** A scheduled search runs every 10 minutes, upserting the latest record for each object into an in-memory B-Tree collection.
-3. **Agent Search:** The LangGraph agent executes a single multi-index SPL search (`earliest=-1h` for logs, joined against `k8s_live_inventory_lookup`), delivering complete state correlation in <10 seconds.
+Use evidence-class-specific freshness thresholds. The starter targets are in `OBSERVABILITY_MATRIX.md`; calibrate them using measured end-to-end collection latency. A stale record can supply historical context but cannot satisfy a current-state safety precondition.

@@ -181,3 +181,6 @@ tests/
 ```
 
 In addition, each use case directory contains a dedicated **`eval.md`** defining its specific test vectors and failure criteria.
+## Executable evaluation status and release gate
+
+The evaluation framework and per-use-case `eval.md` files are specifications, not proof that tests or referenced fixtures exist. Before enabling a use case, every fixture reference in its evaluation document must resolve to a committed dossier, every expected output must validate against a typed schema, and the executable harness described in `tests/IMPLEMENTATION_TEST_BACKLOG.md` must pass. Each use case requires canonical positive, negative, missing, contradictory, stale/wrong-cluster, backend-error and relevant safety/injection cases.
