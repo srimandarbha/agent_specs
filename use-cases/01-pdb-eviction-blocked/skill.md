@@ -1,115 +1,188 @@
-# Skill: Diagnose PodDisruptionBudget blocks eviction
+# Skill: Fail-Proof Diagnosis for PodDisruptionBudget Blocks Eviction (`01-pdb-eviction-blocked`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **poddisruptionbudget blocks eviction**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc -n openshift-machine-config-operator logs <controller-pod> -c machine-config-controller --since=2h | grep -Ei 'drain|evict|disruption budget|<node>'
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` / cordoned, and MCO state is `Updating`. | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | MCC log contains an eviction subresource rejection matching: `(?i)(cannot evict pod.*disruption budget|eviction.*429.*too many requests)` | Exit: `not_supported: no_pdb_eviction_denial_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get pdb -A
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Blocker Pod]              [No Error Log Found]
+            Namespace, Pod Name, Error String           ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: PDB Selector Match]
+            Match Pod labels against PDB spec.selector
+                         │
+         ┌───────────────┴───────────────┐
+         ▼                               ▼
+   [0 PDBs Matched]             [PDB Found in Namespace]
+   ──► Check for orphan /       Verify status.disruptionsAllowed
+       deleted PDB                               │
+                         ┌───────────────────────┴───────────────────────┐
+                         ▼                                               ▼
+            [disruptionsAllowed > 0]                        [disruptionsAllowed == 0]
+            ──► CONTRADICTION! Denial                       ──► PDB Block Confirmed!
+                is historical or transient.                     Isolate Root Cause (Step 3)
 ```
-```bash
-oc describe pdb <pdb> -n <namespace>
+
+### Step 1: Blocker Pod & Error Extraction
+1. Extract `target_namespace` and `failing_pod_name` from the MCC log line:
+   ```regex
+   Cannot evict pod "(?<target_namespace>[^/]+)/(?<failing_pod_name>[^"]+)": (?<denial_message>.*)
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`:
+   * Confirm Pod `metadata.labels`.
+   * Confirm Pod `ownerReferences` (Deployment, StatefulSet, or ReplicaSet).
+
+### Step 2: Correlate PDB & Evaluate Disruption Allowance
+1. Scan `k8s_objects` / KV Store for `resource_kind == "PodDisruptionBudget"` in `target_namespace`.
+2. Evaluate `spec.selector.matchLabels` and `matchExpressions` against the failing Pod's `metadata.labels`:
+   * **Edge Case 2A: 0 PDBs match:** The PDB was deleted after the event or selector is misconfigured. Flag `probable: pdb_deleted_or_selector_mismatch`.
+   * **Edge Case 2B: Multiple PDBs match:** Kubernetes prohibits overlapping PDBs. Flag `probable: overlapping_pdb_configuration`.
+   * **Normal Case: Exactly 1 PDB matches:** Proceed to status evaluation.
+3. Check `status.disruptionsAllowed`:
+   * **If `disruptionsAllowed > 0`:** **HALT with CONTRADICTION.** The eviction failure is historical or already cleared. Do NOT recommend scaling.
+   * **If `disruptionsAllowed == 0`:** Proceed to Step 3.
+
+---
+
+### Step 3: Causal Sub-Tree Analysis (The "Why is disruptionsAllowed == 0?" Engine)
+
+A PDB blocking eviction is a symptom. The agent must isolate the root cause:
+
 ```
-```bash
-oc get deploy,sts,rs -n <namespace> -o wide
+                                  [disruptionsAllowed == 0]
+                                              │
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+       [Branch 3A: Sibling Crash]     [Branch 3B: minAvailable Equal] [Branch 3C: Single-Replica]
+       currentHealthy < desiredHealthy currentHealthy == minAvailable   spec.replicas == 1 and
+       Sibling in CrashLoopBackOff     All running replicas healthy     minAvailable == 1
+              │                               │                               │
+              ▼                               ▼                               ▼
+       Playbook: null (Fix Crash)      Playbook: pdb_scale_up          Playbook: null (Arch Conflict)
+       CLI Fallback: Inspect Sibling   AAP Extra Vars: Scale +1        CLI Fallback: Owner Sign-off
 ```
-```bash
-oc get pods -n <namespace> -o wide
+
+* **Branch 3A: Crashing / Unready Sibling Replica**
+  * *Evidence:* `currentHealthy < desiredHealthy` in PDB status OR `kube_pod_container_status_waiting_reason{reason=~"CrashLoopBackOff|ImagePullBackOff|ContainerCreating"} > 0`.
+  * *Diagnosis:* PDB disruption is blocked because existing sibling pods are unready. Evicting the target pod would cause service outage.
+  * *Remediation Route:* **DO NOT scale up** (new replicas may also crash). Route to **Manual CLI Fallback** to investigate the crashing container.
+
+* **Branch 3B: Workload at Capacity / `minAvailable` Quota Reached**
+  * *Evidence:* `currentHealthy == desiredHealthy == minAvailable` AND all existing replicas report `Ready: True`.
+  * *Diagnosis:* The deployment has no buffer to absorb a temporary pod drain. Scaling by +1 replica will satisfy `minAvailable` and allow eviction.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_pdb_scale_up`**.
+
+* **Branch 3C: Single-Replica Architectural Conflict**
+  * *Evidence:* Workload has `replicas: 1` and PDB has `minAvailable: 1` or `maxUnavailable: 0%`.
+  * *Diagnosis:* Single-replica zero-downtime architectural deadlock. The node cannot drain without either scaling to 2 replicas or taking temporary downtime.
+  * *Remediation Route:* **Manual CLI Fallback with Service-Owner Sign-off**.
+
+* **Branch 3D: Replacement Pod Capacity Starvation**
+  * *Evidence:* Sibling replica exists but is stuck in `phase: Pending` AND scheduler logs show `0/N nodes available: Insufficient cpu/memory`.
+  * *Diagnosis:* Replacement pod cannot schedule on remaining cluster nodes.
+  * *Remediation Route:* **Manual CLI Fallback (Cluster Capacity Check)**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_pdb_scale_up`)
+**Conditions for Match:**
+1. Branch 3B is satisfied (all current replicas healthy; `currentHealthy == minAvailable`).
+2. Workload owner is a `Deployment` or `StatefulSet`.
+3. Cluster-wide allocatable memory and CPU > workload pod requests.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_pdb_scale_up",
+  "playbook_file": "playbooks/remediate-pdb-scale-up.yml",
+  "risk_level": "low",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "target_namespace": "{{ target_namespace }}",
+    "workload_kind": "{{ workload_kind }}",
+    "workload_name": "{{ workload_name }}",
+    "target_pdb_name": "{{ target_pdb_name }}",
+    "current_replicas": 2,
+    "scale_to": 3
+  },
+  "verification_goal": "PDB disruptionsAllowed becomes >= 1 within 120s"
+}
 ```
-4. Compare observations against the expected signal: MCC log contains `Cannot evict pod as it would violate the pod's disruption budget` or equivalent eviction-subresource denial.
-5. Validate the primary cause using these evidence sources: MCC drain log naming namespace/pod; `oc get pdb -A`; PDB `status.disruptionsAllowed`, `currentHealthy`, `desiredHealthy`; owning workload replica status; replacement scheduling events.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Restore intended healthy replicas and scheduling capacity first. Confirm the PDB selector and whether more than one PDB selects the pod. If policy must be changed, use an approved temporary change, record the original manifest, scope the change narrowly, and restore/verify it after the node update.
-8. Explain the operational risk: Changing `minAvailable`/`maxUnavailable` weakens availability guarantees; never patch to zero without service-owner approval and a rollback record.
-9. Define verification using: MCC logs show the blocker pod evicted/deleted, desired and last-applied drainer annotations converge, node update progresses, and original PDB policy is restored and verified.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+### Rule 2: Manual CLI Fallback Generation
+**Triggered when:** Branch 3A (crashing sibling), Branch 3C (single-replica), Branch 3D (capacity), or unmanaged naked pod.
 
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Crashing sibling replica detected; scaling will not resolve root cause.",
+  "manual_cli_fallback": {
+    "risk_level": "medium",
+    "pre_checks": [
+      "oc get pods -n {{ target_namespace }} -l {{ selector_string }} -o wide",
+      "oc get pdb {{ target_pdb_name }} -n {{ target_namespace }}"
+    ],
+    "remediation_steps": [
+      "# 1. Check why the sibling replica is failing readiness probes or crashing:",
+      "oc -n {{ target_namespace }} logs {{ crashing_pod_name }} --previous --tail=100",
+      "# 2. If crashing due to transient config, restart or fix the deployment:",
+      "oc -n {{ target_namespace }} rollout restart deployment/{{ workload_name }}"
+    ],
+    "safety_warning": "Do not delete the remaining healthy pod on the draining node until sibling pods are in Running/Ready state.",
+    "verification": [
+      "oc get pdb {{ target_pdb_name }} -n {{ target_namespace }} -o jsonpath='{.status.disruptionsAllowed}'",
+      "oc get node {{ node_name }} -o jsonpath='{.spec.unschedulable}'"
+    ]
+  }
+}
+```
 
-## Kubernetes object observability requirements
+---
 
-**Scenario:** PDB blocks eviction
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-### Required object evidence
-- Pod (namespace/name/UID, labels, nodeName, ownerReferences, deletionTimestamp, finalizers, readiness/phase)
-- PodDisruptionBudget (selector, minAvailable/maxUnavailable, currentHealthy, desiredHealthy, expectedPods, disruptionsAllowed, disruptedPods, observedGeneration)
-- Event (eviction denial reason/message, involved object, event time)
-- Owning Deployment/ReplicaSet/StatefulSet and replica health
-- Node (name, readiness, schedulability)
+1. **Tool Failure:** The Splunk multi-index query times out or returns HTTP 5xx after 1 retry. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing PDB Record:** MCC log explicitly reports disruption budget denial, but neither `k8s_objects` nor KV Store contains a PDB matching the pod's namespace. Report: `probable: pdb_record_missing_from_cache`.
+3. **Selector Ambiguity:** Pod labels match multiple conflicting PDBs in the same namespace. Report: `inconclusive: multiple_overlapping_pdbs_detected`.
+4. **Stale Observation:** PDB status timestamp is older than 2 hours and no recent watch event exists. Report: `inconclusive: pdb_state_stale`.
 
-### Correlation rule
-Join the MCC eviction-denial log to the exact Pod by cluster, namespace, name/UID and time; evaluate PDB selector semantics in the same namespace against captured Pod labels; compare timestamped PDB status with the eviction time.
+---
 
-### Diagnosis gate
-Confirmed only when a specific eviction denial is correlated with the target Pod and a matching PDB state at the relevant time. `disruptionsAllowed=0` alone is insufficient. If historical PDB state or selector inputs are missing, report probable/inconclusive.
+## 6. Post-Remediation Verification Contract
 
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
+Whether executed via AAP or manual CLI, recovery MUST be proven using these exact signals:
 
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **PDB/eviction blocked**. Require a matching target pod, namespace/selector match, PDB status and time-correlated eviction/drain failure. disruptionsAllowed=0 alone is not proof that this specific drain is blocked.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **PDB Convergence:** `status.disruptionsAllowed >= 1` in `k8s_live_inventory_lookup` or `ocp_metrics`.
+2. **Eviction Success:** `index=ocp_logs` records: `Eviction of pod <pod> succeeded` OR the pod no longer appears on the draining node (`spec.nodeName != <node>`).
+3. **MCO Progress:** `index=k8s_objects` / KV Store shows `desiredDrain == lastAppliedDrain` on the node, and the MachineConfigPool updating counter advances.

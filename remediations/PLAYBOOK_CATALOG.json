@@ -1,0 +1,118 @@
+[
+  {
+    "playbook_id": "playbook_pdb_scale_up",
+    "playbook_file": "playbooks/remediate-pdb-scale-up.yml",
+    "supported_use_cases": ["01-pdb-eviction-blocked"],
+    "description": "Temporarily scales up a Deployment or StatefulSet by +1 replica to satisfy PodDisruptionBudget minAvailable constraints during node drain.",
+    "risk_level": "low",
+    "requires_human_approval": true,
+    "preconditions": [
+      "pdb_disruptions_allowed == 0",
+      "workload_kind IN ['Deployment', 'StatefulSet', 'ReplicaSet']",
+      "failing_pod_matches_pdb_selector == true"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "target_namespace",
+      "workload_kind",
+      "workload_name",
+      "target_pdb_name",
+      "current_replicas",
+      "scale_to"
+    ],
+    "verification_goal": "pdb_disruptions_allowed > 0 and mcc_drain_resumed == true"
+  },
+  {
+    "playbook_id": "playbook_restart_csi_driver",
+    "playbook_file": "playbooks/remediate-restart-csi-driver.yml",
+    "supported_use_cases": ["04-storage-unmount-detach"],
+    "description": "Restarts a stalled CSI storage node-driver daemon pod on the draining node to clear locked volume unmounts.",
+    "risk_level": "low",
+    "requires_human_approval": true,
+    "preconditions": [
+      "volume_attachment_detach_error != null",
+      "target_node_cordoned == true"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "draining_node",
+      "csi_driver_namespace",
+      "csi_driver_daemonset"
+    ],
+    "verification_goal": "volume_attachment_status_attached == false"
+  },
+  {
+    "playbook_id": "playbook_reconcile_drain_annotation",
+    "playbook_file": "playbooks/remediate-drain-annotation.yml",
+    "supported_use_cases": ["14-uncordon-or-drainer-annotation"],
+    "description": "Reconciles MCO drain annotations on a node when external actors uncordoned the node prematurely or an annotation race condition occurred.",
+    "risk_level": "low",
+    "requires_human_approval": true,
+    "preconditions": [
+      "node_desired_drain != node_last_applied_drain",
+      "competing_automation_detected == true"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "draining_node",
+      "expected_mco_drain_state"
+    ],
+    "verification_goal": "node_desired_drain == node_last_applied_drain"
+  },
+  {
+    "playbook_id": "playbook_unpause_mcp",
+    "playbook_file": "playbooks/remediate-unpause-mcp.yml",
+    "supported_use_cases": ["10-mcp-paused-or-coordination"],
+    "description": "Unpauses a MachineConfigPool after confirming all maintenance prerequisites and availability constraints are met.",
+    "risk_level": "medium",
+    "requires_human_approval": true,
+    "preconditions": [
+      "mcp_paused == true",
+      "mcp_degraded == false"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "target_mcp_name"
+    ],
+    "verification_goal": "mcp_paused == false and mcp_updating == true"
+  },
+  {
+    "playbook_id": "playbook_cleanup_stale_virt_launcher",
+    "playbook_file": "playbooks/remediate-stale-virt-launcher.yml",
+    "supported_use_cases": ["06-ocv-stale-virt-launcher"],
+    "description": "Cleans up an orphaned virt-launcher pod on the source node after confirming the VM live migration has completely succeeded on the target node.",
+    "risk_level": "medium",
+    "requires_human_approval": true,
+    "preconditions": [
+      "vmi_migration_status == 'Succeeded'",
+      "active_vmi_running_on_different_node == true",
+      "stale_launcher_pod_on_draining_node == true"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "vmi_namespace",
+      "vmi_name",
+      "stale_pod_name",
+      "draining_node"
+    ],
+    "verification_goal": "stale_pod_deleted == true and mcc_drain_resumed == true"
+  },
+  {
+    "playbook_id": "playbook_restart_failed_systemd_unit",
+    "playbook_file": "playbooks/remediate-restart-systemd-unit.yml",
+    "supported_use_cases": ["08-node-kubelet-crio-unreachable", "11-config-drift-mcd-degraded"],
+    "description": "Restarts a failed non-critical host service (e.g. chronyd, crio journal vacuum) that triggered an MCD degraded condition.",
+    "risk_level": "medium",
+    "requires_human_approval": true,
+    "preconditions": [
+      "node_status == 'Degraded'",
+      "failed_service_is_allowlisted == true"
+    ],
+    "required_extra_vars": [
+      "target_cluster",
+      "target_node",
+      "systemd_service_name"
+    ],
+    "verification_goal": "systemd_service_active == true and mcd_degraded == false"
+  }
+]

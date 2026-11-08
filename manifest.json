@@ -7,10 +7,11 @@
       "manual"
     ],
     "evidence": [
-      "splunk_mcp",
-      "prometheus_mcp",
-      "readonly_kubernetes_api"
+      "splunk_mcp"
     ],
+    "telemetry_architecture": "unified_splunk_multi_index_with_kv_store",
+    "k8s_objects_allowlist": "golden_six",
+    "remediation_model": "ansible_catalog_with_cli_fallback",
     "mode": "diagnosis_and_recommendations_only",
     "use_case_count": 15,
     "memory": "postgres_sql_first_pgvector_later",
@@ -156,8 +157,12 @@
   "shared_files": [
     "README.md",
     "SOURCE_REVIEW.md",
+    "intent.md",
     "architecture/LANGGRAPH_DESIGN.md",
     "contracts/TOOL_CONTRACTS.md",
+    "remediations/PLAYBOOK_CATALOG.json",
+    "remediations/README.md",
+    "docs/OBSERVABILITY_REQUIREMENTS.md",
     "db/README.md",
     "db/migrations/001_initial.sql",
     "manifest.json",

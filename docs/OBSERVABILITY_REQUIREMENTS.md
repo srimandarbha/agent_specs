@@ -1,127 +1,93 @@
-# Observability Requirements: All MCO Drain Troubleshooting Use Cases
+# Observability Requirements: Streamlined Multi-Cluster Telemetry for MCO Drain
 
-**Status:** Proposed | **Target:** OpenShift 4.22.x fleet | **Agent mode:** Read-only diagnosis and recommendations
+**Status:** Approved Architectural Direction  
+**Scope:** OpenShift Fleet (150+ clusters)  
+**Evidence Pipeline:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects`, `ocp_metrics`) with KV Store state caching  
+**Agent Operating Mode:** Read-only diagnosis and structured remediation specification (Ansible Playbook / CLI fallback)
 
-## 1. Current evidence boundary
+---
 
-Container logs are already forwarded to Splunk and metrics are available in Prometheus. Kubernetes object state and Kubernetes Events are the missing evidence types. The LangGraph agent has **only Splunk MCP and Prometheus MCP**; it must not assume a Kubernetes API/MCP tool is available.
+## 1. Evidence Architecture Overview
 
-A separate, read-only cluster-side collector may read an explicit allowlist of Kubernetes objects and Events and forward normalized snapshots/change records through the existing OTel → Kafka → Splunk pipeline. The agent queries those records via Splunk MCP and uses Prometheus MCP for metrics. If no collector can read the API, the agent must work with logs/metrics alone and report object-level diagnoses as probable or inconclusive when required relationships/history are missing.
+To eliminate collector memory bloat, high etcd churn, and high Splunk ingest costs:
+1. **Logs & Metrics Remain Primary:** Container logs (MCC, MCD, Kubelet) and Prometheus metrics (`kube-state-metrics`, KubeVirt metrics) provide 80%+ of all diagnostic signals.
+2. **The "Golden Six" Kubernetes Objects:** Object collection is strictly restricted to **6 core types**. All heavy virtualization CRDs (`VirtualMachine`, `DataVolume`, `VMIM`) are dropped.
+3. **Field Pruning at Ingestion:** `metadata.managedFields` and container environment variables are stripped by OpenTelemetry, reducing JSON payload size by 65%.
+4. **Zero-Compute State (Splunk KV Store):** Static and slow-changing objects (PDBs, Nodes) are maintained in a Splunk KV Store (`k8s_live_inventory_lookup`) to guarantee full state visibility with zero index bucket scanning.
 
-## 2. Shared collection requirements
+---
 
-Every object snapshot/change/event should carry, where applicable:
-- stable `cluster_id`, environment/region, resource kind/API group, namespace, name, UID and resourceVersion;
-- source event time, observation time and Splunk ingestion time as separate timestamps;
-- record type (`snapshot`, `change`, `event`), collector identity, schema version and source reference;
-- only allowlisted fields, with credentials and sensitive payloads redacted or excluded.
+## 2. The "Golden Six" Kubernetes Object Allowlist
 
-Use initial list/baseline + watch/change capture + periodic reconciliation. Record collector errors, last-success timestamps and watch gaps. Object names can be reused, so prefer UID for historical joins. Events expire; forward promptly and preserve original event timestamps.
+| Object Kind | API Group / Version | What It Provides That Metrics/Logs Cannot | Excluded Fields |
+|---|---|---|---|
+| **`Pod`** | `core/v1` | `metadata.finalizers` (UC 03), `metadata.labels` for PDB selector matching (UC 01), `metadata.deletionTimestamp`. | `metadata.managedFields`, `spec.containers[*].env`, `spec.containers[*].envFrom` |
+| **`PodDisruptionBudget`** | `policy/v1` | `spec.selector` (resolves which PDB owns a pod when multiple PDBs exist in a namespace). | `metadata.managedFields` |
+| **`Node`** | `core/v1` | `metadata.annotations`: MCO drain coordination keys (`desiredDrain` vs `lastAppliedDrain` in UC 14), `spec.unschedulable`. | `metadata.managedFields`, `status.images` |
+| **`VolumeAttachment`** | `storage.k8s.io/v1` | `status.attachError` and `status.detachError` to detect storage unmount deadlocks on the draining node (UC 04). | `metadata.managedFields` |
+| **`MachineConfigPool`** | `machineconfiguration.openshift.io/v1` | Current vs. desired rendered config references, pool rollout progress, and paused flags (UC 10, 11, 12). | `metadata.managedFields` |
+| **`Event`** | `core/v1` | Fast chronological timeline of eviction denials and scheduling rejections. | None |
 
-## 3. Global object allowlist
+---
 
-### P0: Baseline across most cases
-- **Node:** name/UID/labels; `spec.unschedulable`, taints; Ready and pressure conditions with transition times; capacity/allocatable; relevant MCO annotations when present (`currentConfig`, `desiredConfig`, `state`, `reason`, and drain coordination annotations verified for the installed release).
-- **MachineConfigPool:** name/generation; `spec.paused`, `maxUnavailable`, desired configuration; conditions and rollout counters (`machineCount`, `updatedMachineCount`, `readyMachineCount`, `unavailableMachineCount`).
-- **Pod:** namespace/name/UID/labels/ownerReferences; nodeName; deletionTimestamp/finalizers; phase/conditions/container waiting or termination states; scheduling constraints and resource requests/limits; PVC references.
-- **PodDisruptionBudget:** namespace/name/UID/selector; minAvailable/maxUnavailable; currentHealthy/desiredHealthy/expectedPods/disruptionsAllowed/disruptedPods/observedGeneration.
-- **Event:** event type/reason/message; event time; involved/regarding object kind/namespace/name/UID; reporting controller/instance; count and related object reference.
+## 3. Explicitly Excluded Objects (What NOT to Ingest)
 
-### P1: Add for storage, admission, config and scheduling
-- **PersistentVolumeClaim:** namespace/name/UID, volumeName, storageClass, access modes, phase/conditions, requested size.
-- **PersistentVolume:** name/UID, claimRef, storageClass, phase, CSI driver and approved non-secret identifiers.
-- **VolumeAttachment:** attacher, nodeName, PV reference, attached status and attach/detach errors.
-- **MachineConfig:** name/labels/UID and configuration identity; avoid collecting full payload by default.
-- **Deployment, ReplicaSet, StatefulSet, DaemonSet:** owner references, selectors and replica/availability status.
-- **ResourceQuota:** relevant hard/used values when quota is a scheduling hypothesis.
-- **ValidatingWebhookConfiguration / MutatingWebhookConfiguration:** rules, operations, selectors, failurePolicy, timeout, service reference.
-- **Service / EndpointSlice:** selector, ports, endpoint readiness/serving/terminating state for referenced webhook services.
-- **Namespace:** name/UID/labels/phase when namespace labels or scope matter.
-- **Lease** in `kube-node-lease`: holderIdentity, renewTime and leaseDurationSeconds for node-heartbeat investigations.
-- **ClusterOperator / ClusterVersion:** conditions/status only when broader upgrade gates are relevant.
+* ❌ **`VirtualMachine`, `VirtualMachineInstance`, `DataVolume`, `VMIM`:** OpenShift Virtualization is fully diagnosed via Prometheus metrics (`kubevirt_vmi_non_evictable`, `kubevirt_vmi_migration_*`) and the KubeVirt eviction interceptor logs in Splunk.
+* ❌ **`Secrets` and `ConfigMaps`:** Strictly prohibited by InfoSec policy; zero credential ingestion.
+* ❌ **`DaemonSets`:** MCO drain helper has `--ignore-daemonsets=true` hardcoded; DaemonSets are never evicted during drain.
+* ❌ **`PersistentVolume` (PV):** PVC and `VolumeAttachment` provide complete diagnostic signal.
+* ❌ **`Service` and `EndpointSlice`:** Webhook reachability errors are logged directly in API server logs.
 
-### P2: OpenShift Virtualization
-- **VirtualMachineInstance (VMI):** namespace/name/UID, node assignment, phase/conditions and launcher Pod relationship.
-- **VirtualMachine:** relevant run/eviction strategy fields and identity, validated against installed API.
-- **VirtualMachineInstanceMigration:** VMI reference, phase/conditions, start/completion times and failure reason.
-- **DataVolume:** phase/conditions and PVC reference.
+---
 
-Validate exact GVKs and fields against the deployed OpenShift/KubeVirt versions. Do not assume every field exists in every release.
+## 4. OpenTelemetry Collector Configuration (`k8sobjectsreceiver`)
 
-## 4. Case-to-object matrix
+Deploy this lightweight configuration across spoke clusters to stream object state safely without OOMKills:
 
-| ID | Scenario | Required object evidence |
-|---|---|---|
-| 01 | PDB blocks eviction | Pod + PDB + Event + owner workload; Node context |
-| 02 | Admission webhook failure | Event + webhook configurations + Service + EndpointSlice + webhook Pod if available |
-| 03 | Pod termination/finalizer | Pod + Event + owner workload; PVC/PV/VolumeAttachment if cleanup is storage-related |
-| 04 | Storage unmount/detach | Pod + PVC + PV + VolumeAttachment + Event |
-| 05 | VM not live-migratable | VMI + VM + migration + launcher Pod + Event; PDB/DataVolume/PVC when relevant |
-| 06 | Stale virt-launcher after migration | Pod + VMI + migration + Event + source/target Node |
-| 07 | Rescheduling/capacity/affinity | Pod + Node + owner workload + Event; ResourceQuota/PDB when relevant |
-| 08 | Node/kubelet/CRI-O unreachable | Node + Lease + Event + affected Pods |
-| 09 | API/etcd latency | Logs/metrics primary; Event, Node/Lease and rollout state only as corroborating symptoms |
-| 10 | MCP paused/coordination | MCP + Node + MachineConfig + Event; ClusterOperator/ClusterVersion if needed |
-| 11 | Config drift/MCD degraded | Node + MCP + MachineConfig + Event |
-| 12 | Rendered config/apply failure | MCP + MachineConfig + Node + Event |
-| 13 | OS pivot/reboot failure | Node + MCP + MachineConfig + Event + Lease when relevant |
-| 14 | Uncordon/drainer coordination | Node + Event + Pod + MCP context |
-| 15 | Disk pressure/host resource exhaustion | Node + Pod + Event; PVC/PV only for storage capacity issues |
+```yaml
+receivers:
+  k8sobjects:
+    auth_type: serviceAccount
+    objects:
+      - name: pods
+        mode: watch
+        exclude:
+          - metadata.managedFields
+          - spec.containers[*].env
+          - spec.containers[*].envFrom
 
-## 5. Case-specific evidence rules
+      - name: poddisruptionbudgets
+        group: policy
+        mode: watch
+        exclude:
+          - metadata.managedFields
 
-1. **PDB:** `disruptionsAllowed=0` alone is not proof. Correlate a specific eviction failure, Pod namespace/labels, matching PDB selector, and PDB state at the failure time.
-2. **Admission:** webhook configuration alone is not proof of outage; correlate API-server/webhook logs and service endpoint state at the incident time.
-3. **Finalizers:** a finalizer's presence is not proof it is stuck; correlate deletion age, owning controller and cleanup logs/events.
-4. **Storage:** trace Pod → PVC → PV → VolumeAttachment and require time-correlated CSI/kubelet/controller errors.
-5. **OCV migration:** correlate VMI, launcher Pod and migration status/timestamps; validate installed API fields.
-6. **Scheduling:** Pending alone does not prove capacity; use scheduler Events/reasons, node allocatable/taints/labels, affinity and quota.
-7. **Node unreachable:** use Node condition transitions, Lease renewTime, logs and metrics; stale snapshots alone are insufficient.
-8. **API/etcd:** logs and latency/error metrics remain primary; object status is corroborating only.
-9. **MCP/config:** paused/Updating or current/desired config mismatch alone may be normal during rollout; correlate MCO/MCD logs and lifecycle timing.
-10. **Reboot/pivot:** account for expected reboot heartbeat gaps; require failure to return/verify plus corroborating evidence.
-11. **Uncordon coordination:** preserve timestamped annotation/schedulability history; a current snapshot may miss a race.
-12. **Disk pressure:** distinguish node filesystem pressure from PVC/backend capacity and avoid blaming a Pod without supporting eviction/ephemeral-storage evidence.
+      - name: nodes
+        mode: watch
+        exclude:
+          - metadata.managedFields
+          - status.images
 
-## 6. Agent/tool contract
+      - name: volumeattachments
+        group: storage.k8s.io
+        mode: watch
+        exclude:
+          - metadata.managedFields
 
-- Agent evidence tools: **Splunk MCP and Prometheus MCP only**.
-- Object collector: separate component, read-only API access, allowlisted fields and resources, no Secret reads and no write verbs.
-- Splunk MCP queries structured object snapshots/change records/Events and existing container logs.
-- Prometheus MCP queries validated metrics. Missing series is `unknown`, not zero.
-- A failed query/tool call is a tool error, not evidence that a fault is absent.
-- Every hypothesis cites evidence IDs and lists contradictory/missing evidence.
-- Report `confirmed`, `probable`, `not_supported`, or `inconclusive`; use `confirmed` only when the scenario's evidence gate is satisfied.
-- If required historical object state was not retained, say so explicitly and do not reconstruct it from a current snapshot.
+      - name: machineconfigpools
+        group: machineconfiguration.openshift.io
+        mode: watch
+        exclude:
+          - metadata.managedFields
 
-## 7. Security and minimization
+      - name: events
+        mode: watch
+```
 
-- No Secret data, tokens, private keys or credentials.
-- No full API mirror, full Pod specs, arbitrary ConfigMaps or broad API audit payloads by default.
-- RBAC limited to `get`, `list`, and optionally `watch` on approved resource types. No create/update/patch/delete/exec/attach/port-forward/proxy/impersonation.
-- Apply TLS, approved authentication, retention controls and access control to object history.
-- Review endpoint addresses, storage identifiers, webhook URLs and configuration metadata for sensitivity.
+---
 
-## 8. Acceptance tests
+## 5. Splunk Ingestion & KV Store Architecture
 
-- PDB diagnosis rejects selector mismatch and stale/current-only PDB evidence.
-- Webhook diagnosis requires matching API-server/webhook failure evidence.
-- Finalizer diagnosis links finalizer/termination state to the responsible cleanup path.
-- Storage diagnosis links Pod/PVC/PV/VolumeAttachment and relevant errors.
-- OCV diagnosis correlates VMI, launcher Pod and migration timeline.
-- Scheduling diagnosis identifies a concrete unsatisfied constraint.
-- Node-unreachable diagnosis checks Lease freshness and Node transitions.
-- API/etcd diagnosis is supported by logs/metrics, not object status alone.
-- MCP/config/pivot/uncordon cases use version-appropriate annotations and time-correlated lifecycle evidence.
-- Collector gaps and ingestion delay are observable.
-- Secret data is absent from emitted records.
-- Missing history or tool failure results in probable/inconclusive, never fabricated certainty.
-
-## 9. Implementation order
-
-1. P0 Node, MCP, Pod, PDB and Event.
-2. Validate case 01 end-to-end and confirm object history can be queried from Splunk.
-3. Add storage objects and owner workloads.
-4. Add webhook dependencies, Lease, MachineConfig and rollout status objects.
-5. Add OCV objects and scenario-specific acceptance tests.
-6. Roll out progressively; measure event/object freshness, ingestion lag, volume, retention and collector gaps before fleet-wide enablement.
+1. **`index=k8s_objects`:** Stores incoming pruned JSON snapshots/events from OpenTelemetry (short 7-day retention).
+2. **`k8s_live_inventory_lookup` (KV Store):** A scheduled search runs every 10 minutes, upserting the latest record for each object into an in-memory B-Tree collection.
+3. **Agent Search:** The LangGraph agent executes a single multi-index SPL search (`earliest=-1h` for logs, joined against `k8s_live_inventory_lookup`), delivering complete state correlation in <10 seconds.

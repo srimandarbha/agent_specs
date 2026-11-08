@@ -1,119 +1,167 @@
-# Skill: Diagnose Storage unmount or detach stalls pod termination
+# Skill: Fail-Proof Diagnosis for Storage Unmount or Detach Stalls (`04-storage-unmount-detach`)
 
-## Purpose
-Use this skill when an MCP or cluster upgrade may be blocked by **storage unmount or detach stalls pod termination**.
+**Version:** 2.0.0  
+**Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
+**Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
+**Evidence Source:** Unified Splunk Multi-Index Search (`ocp_logs`, `k8s_objects` / KV Store, `ocp_metrics`)
 
-## Required inputs
-- Cluster/OpenShift version and incident time window.
-- MCP name and affected node, if known.
-- Exact MCO/MCD log line or alert.
-- Access to Splunk MCP object snapshots/events from the separate collector and relevant operator logs; Prometheus MCP for metrics. The agent has no direct Kubernetes API tool.
+---
 
-## Procedure
-1. Start with the MCC log. Identify the exact node and the exact pod or operation named in the error.
-2. Confirm the current lifecycle stage. Do not call it a drain issue if the drain has completed and the failure is in apply/reboot/uncordon.
-3. Run the following read-only checks:
-```bash
-oc get pod <pod> -n <namespace> -o jsonpath='{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{"\n"}{end}'
+## 1. Entry Gate & Activation Criteria (Fail-Safe Pre-Checks)
+
+The agent MUST verify these conditions before activating this skill. If any check fails, immediately exit to `persist_and_report` with the stated status.
+
+| Check | Requirement | Exit Action on Failure |
+|---|---|---|
+| **Cluster Identity** | Target `cluster_id` matches an authorized cluster in the registry. | Exit: `inconclusive: invalid_cluster_context` |
+| **Lifecycle Stage** | Node status is `SchedulingDisabled` (cordoned), and pod termination is actively stalled. | Exit: `inconclusive: lifecycle_stage_not_drain` |
+| **Trigger Signal** | Kubelet or CSI logs in `ocp_logs` match: `(?i)(failed to unmount|unmountdevice failed|failed to detach|volume.*still attached|volumeattachment.*in use|device or resource busy)` | Exit: `not_supported: no_storage_unmount_error_logged` |
+
+---
+
+## 2. Step-by-Step Diagnostic Procedure (Deterministic Decision Tree)
+
 ```
-```bash
-oc get pvc -n <namespace> -o wide
+                            [Start: Unified Splunk Dossier Ingested]
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+            [Step 1: Extract Storage Target]           [No Storage Error Found]
+            Namespace, Pod Name, Volume Name           ──► Exit: not_supported
+                         │
+                         ▼
+            [Step 2: VolumeAttachment Lookup]
+            Look up VolumeAttachment for Node + PV in KV Store
+                         │
+         ┌───────────────┴───────────────┐
+         ▼                               ▼
+   [attached == false]            [attached == true OR detachError != null]
+   ──► Unmount completed!         ──► Detach Stalled!
+       Storage is cleared.            Isolate Root Cause (Step 3)
 ```
-```bash
-oc get pv <pv> -o yaml
+
+### Step 1: Storage Target & Pod Extraction
+1. Extract `target_namespace`, `failing_pod_name`, and `volume_name` from the Kubelet or MCC log error:
+   ```regex
+   (?i)UnmountDevice failed for volume "(?<volume_name>[^"]+)".*pod "(?<target_namespace>[^/]+)/(?<failing_pod_name>[^"]+)"
+   ```
+2. Verify in `k8s_objects` / KV Store that `target_resource == failing_pod_name`:
+   * Confirm Pod `metadata.deletionTimestamp` is set (pod is actively terminating).
+   * Confirm Pod volume reference maps to the target PVC / PV.
+
+### Step 2: VolumeAttachment & Node Status Check
+1. Scan `k8s_objects` / KV Store for `resource_kind == "VolumeAttachment"` where `node_name == draining_node` and `volume_name == target_pv`:
+   * **Case 2A: `status.attached == false` AND no detachError:** The volume has detached successfully. The stall is caused by application shutdown or finalizers, NOT storage. Exit to `use-cases/03-pod-termination-finalizer`.
+   * **Case 2B: `status.attached == true` OR `status.detachError != null`:** Confirmed storage unmount/detach stall. Proceed to Step 3.
+
+---
+
+### Step 3: Causal Sub-Tree Analysis (The Root-Cause Engine)
+
 ```
-```bash
-oc get volumeattachments.storage.k8s.io
+                                [Storage Detach Stalled]
+                                           │
+             ┌─────────────────────────────┼─────────────────────────────┐
+             ▼                             ▼                             ▼
+   [Branch 3A: Hung CSI Daemon]  [Branch 3B: Multi-Attach Lock] [Branch 3C: Target Busy]
+   RPC timeout / CSI plugin hang  Cloud/Array lock conflict     Host process holds mount open
+             │                             │                             │
+             ▼                             ▼                             ▼
+   Playbook: restart_csi_driver  Playbook: null (Backend Lock)  Playbook: null (Host Busy)
+   AAP Extra Vars: CSI daemon    CLI Fallback: Storage Admin    CLI Fallback: fuser / lsof
 ```
-```bash
-oc get pods -A -o wide | grep -Ei 'csi|portworx|dell|pure'
+
+* **Branch 3A: Hung CSI Node-Driver DaemonSet Pod on the Draining Node**
+  * *Evidence:* `VolumeAttachment.status.detachError` contains `rpc error: code = DeadlineExceeded` OR CSI node pod logs in `ocp_logs` show connection timeouts while Kubelet logs show `UnmountDevice failed`.
+  * *Diagnosis:* The local CSI node daemonset pod on the draining node is deadlocked or hung, failing to unmount the filesystem from the host.
+  * *Remediation Route:* **Clean Playbook Match $\rightarrow$ `playbook_restart_csi_driver`**. (Restarting the daemonset pod on that specific node clears the hung RPC handler).
+
+* **Branch 3B: Storage Backend Lock / Multi-Attach Conflict**
+  * *Evidence:* `VolumeAttachment.status.detachError` contains `Multi-Attach error for volume` OR `Volume is already exclusively attached to one node`.
+  * *Diagnosis:* Cloud/SAN storage control plane still holds an exclusive volume lease, or another node attempted to attach the volume before this node completed unmounting.
+  * *Remediation Route:* **Manual CLI Fallback (Do NOT restart local CSI pod)**. Requires storage control plane coordination.
+
+* **Branch 3C: Host Process Holding Mount Point Open (`device or resource busy`)**
+  * *Evidence:* Kubelet journal logs show: `umount: ...: target is busy` OR `device or resource busy`.
+  * *Diagnosis:* A container process, zombie process, or lingering sub-mount namespace on the host is still accessing the volume directory.
+  * *Remediation Route:* **Manual CLI Fallback (Host Process Inspection)**.
+
+---
+
+## 4. Remediation Resolution Rules
+
+### Rule 1: Automated Playbook Match (`playbook_restart_csi_driver`)
+**Conditions for Match:**
+1. Branch 3A is satisfied (RPC timeout / CSI node daemon hang).
+2. CSI driver pod on the draining node is identified (e.g. `csi-rbdplugin`, `aws-ebs-csi-driver-node`, `vsphere-csi-node`).
+3. Target node is already cordoned (`SchedulingDisabled`).
+
+**Generated Output Spec:**
+```json
+{
+  "matched": true,
+  "playbook_id": "playbook_restart_csi_driver",
+  "playbook_file": "playbooks/remediate-restart-csi-driver.yml",
+  "risk_level": "low",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "{{ cluster_id }}",
+    "draining_node": "{{ node_name }}",
+    "csi_driver_namespace": "{{ csi_namespace }}",
+    "csi_driver_daemonset": "{{ csi_daemonset_name }}"
+  },
+  "verification_goal": "VolumeAttachment status.attached becomes false within 120s"
+}
 ```
-```bash
-oc get events -A --sort-by=.lastTimestamp
+
+---
+
+### Rule 2: Manual CLI Fallback Generation
+**Triggered when:** Branch 3B (multi-attach lock), Branch 3C (target busy), or non-standard third-party storage driver.
+
+**Generated Output Spec:**
+```json
+{
+  "matched": false,
+  "reason": "Storage backend lock or busy mount detected; requires human verification to prevent data corruption.",
+  "manual_cli_fallback": {
+    "risk_level": "high",
+    "pre_checks": [
+      "# 1. Check VolumeAttachment status and error message:",
+      "oc get volumeattachment -o wide | grep {{ volume_name }}",
+      "# 2. Inspect CSI driver controller logs:",
+      "oc -n {{ csi_namespace }} logs deployment/{{ csi_controller }} -c csi-driver --tail=50"
+    ],
+    "remediation_steps": [
+      "# 3. If host mount is busy, inspect open file descriptors on the draining node:",
+      "oc adm node-logs {{ node_name }} --path=journal | grep -Ei 'umount.*busy|{{ volume_name }}'",
+      "# 4. WARNING: Never force-delete VolumeAttachment without confirming disk is unmounted from host!"
+    ],
+    "safety_warning": "Force-detaching a volume while a host process is actively writing will cause silent filesystem corruption.",
+    "verification": [
+      "oc get volumeattachment | grep {{ volume_name }}",
+      "oc get pod {{ failing_pod_name }} -n {{ target_namespace }}"
+    ]
+  }
+}
 ```
-4. Compare observations against the expected signal: Pod remains Terminating; kubelet or CSI logs mention unmount, mount, detach, `UnmountDevice`, `FailedUnmount`, or volume operation already in progress.
-5. Validate the primary cause using these evidence sources: Pod PVC references, PV and VolumeAttachment state, CSI controller/node logs, node mount errors, backend health, storage network reachability.
-6. Consider alternative causes, including broad API/etcd issues and node health, before concluding.
-7. Recommend the narrowest supported fix: Follow the actual CSI driver's documented procedure. Repair connectivity, CSI node/controller health, or the storage backend operation; verify no workload is still using the volume before any detach. For Dell CSM, Portworx or Pure, use the driver/version-specific runbook.
-8. Explain the operational risk: Do not manually delete VolumeAttachment objects, force detach a live volume, or reboot a node with unresolved storage ownership unless storage and workload owners approve the documented recovery.
-9. Define verification using: Unmount/detach operations complete, the old pod terminates, volume attachment state is consistent, and replacement workload health is verified.
-10. If evidence is incomplete, report what is missing and escalate. Do not guess.
 
-## Output format
-Return:
-- **Classification:** confirmed / likely / inconclusive
-- **Lifecycle stage:**
-- **Affected objects:**
-- **Observed evidence:** timestamped excerpts and resource references
-- **Root-cause reasoning:** evidence for and against
-- **Recommended next action:** read-only first
-- **Risk and approval:** explicit
-- **Verification:** exact checks and expected state
-- **Escalation trigger:** what would make the agent stop
+---
 
-## Prohibited autonomous actions
-Do not force-delete pods, null finalizers, weaken PDBs, remove webhooks, detach volumes, change VM eviction policy, uncordon nodes, edit MCO coordination annotations, unpause MCPs, alter maxUnavailable, reboot/delete nodes or change host files. These require a human-approved, release-appropriate runbook and explicit confirmation.
+## 5. Fail-Safe Stop Conditions & Uncertainty Downgrades
 
+The agent MUST halt and report `inconclusive` or `not_supported` if any of the following occur:
 
-## Kubernetes object observability requirements
+1. **Tool Failure:** The Splunk multi-index query times out or returns HTTP 5xx. Report: `inconclusive: telemetry_backend_unavailable`.
+2. **Missing VolumeAttachment:** Kubelet reports detach error, but no matching `VolumeAttachment` exists in `k8s_objects` or KV Store. Report: `probable: volume_attachment_record_missing`.
+3. **Active Workload Risk:** Workload pod on draining node is still in `phase: Running` (not `Terminating`). **HALT IMMEDIATELY.** Never recommend detaching a volume for a running pod. Report: `not_supported: pod_not_in_terminating_state`.
 
-**Scenario:** Storage unmount or detach stall
+---
 
-The agent can query only Splunk MCP and Prometheus MCP. The object evidence below must be emitted by the separate read-only object/Event collector into Splunk; do not assume direct Kubernetes API access from the agent. Existing container logs and Prometheus metrics remain complementary evidence.
+## 6. Post-Remediation Verification Contract
 
-### Required object evidence
-- Pod (nodeName, UID, deletionTimestamp, volume references)
-- PersistentVolumeClaim (namespace/name/UID, volumeName, storageClassName, accessModes, phase, conditions)
-- PersistentVolume (claimRef, CSI driver, phase, safe non-secret volume identifiers)
-- VolumeAttachment (attacher, nodeName, PV reference, attached, attachError, detachError)
-- Event (Pod/PVC/PV/VolumeAttachment references and timestamps)
-- VMI/DataVolume when the workload is an OpenShift Virtualization VM
+Whether executed via AAP or manual CLI, recovery MUST be proven using these exact signals:
 
-### Correlation rule
-Trace Pod volume reference → PVC → PV → VolumeAttachment and match node/driver identifiers with CSI, kubelet and storage logs. Preserve source event time and object observation time.
-
-### Diagnosis gate
-A volume object in a non-ready state is not by itself proof it blocked drain. Require a time-correlated unmount/detach error or controller evidence tied to the affected Pod/volume.
-
-### Missing-data behaviour
-If the relevant object type, field, historical state, timestamp, or relationship is unavailable, record the exact evidence gap. Do not infer a negative result from a missing record or failed query. Downgrade the finding to `probable` or `inconclusive` as appropriate.
-
-## Agent graph integration contract (shared)
-
-This use case is invoked by the shared 12-node LangGraph workflow in `../../architecture/LANGGRAPH_DESIGN.md`. It must not create a separate autonomous agent. Its `skill.md` defines classification signals, required evidence, discriminating follow-up queries, diagnosis gates, stop conditions and safe recommendations.
-
-### Required runtime fields
-- `cluster_id`, `cluster_name`, `openshift_version`, `node_name` (when applicable), `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`.
-- Evidence records include source/tool, cluster/resource identity, query/request reference, event/observed/ingested timestamps, freshness, redaction state and content hash.
-- Every hypothesis must cite evidence IDs and list contradictions or missing facts.
-
-### Bounded execution
-- Max 3 evidence rounds; max 8 total tool calls; 15-second per-call timeout; at most 2 retries for transient errors only; overall interactive deadline 90 seconds. These are agent configuration defaults, not OpenShift/MCO product timeouts.
-- Stop as `inconclusive` when minimum evidence is missing, identity is ambiguous, tools fail, or contradictory evidence cannot be resolved within budget. Tool failure must never be reported as absence of a fault.
-
-### Safety and persistence
-- Read-only Splunk MCP and Prometheus MCP access only for the agent; the separate collector has narrowly scoped read-only Kubernetes access. No mutation, exec, secret reads, force deletion, patching, reboot, storage detach, VM change, MCP change, or remediation execution.
-- Persist incident summary and evidence metadata to PostgreSQL using `db/migrations/001_initial.sql`; keep raw telemetry in its source system. SQL retrieval first; pgvector is deferred. Historical cases prioritize checks but do not prove current root cause.
-- Verify the deployed OpenShift version and use release-matched runbooks/source. If compatibility is unverified, say so explicitly.
-
-## Executable skill contract
-
-### Goal
-Diagnose: **Storage unmount/detach**. Correlate pod volume references with PVC/PV/VolumeAttachment and CSI node/controller logs. Do not detach volumes or delete attachments.
-
-### Required evidence checklist
-- [ ] Correct cluster, OpenShift version and target resource identity.
-- [ ] Time-correlated controller/MCO logs from Splunk MCP.
-- [ ] Relevant Prometheus signals when the hypothesis needs metrics.
-- [ ] Read-only Kubernetes object state and events when applicable.
-- [ ] Evidence freshness, source reference and contradictions recorded.
-
-### Decision and stop rules
-- `supported`: the case-specific required evidence is present and corroborated.
-- `probable`: some evidence supports the hypothesis, but a required corroborating source is unavailable.
-- `not_supported`: reliable evidence contradicts the hypothesis.
-- `inconclusive`: identity, freshness, minimum evidence or tool availability is insufficient.
-- Never treat missing telemetry as a zero value or failed query as a negative result. Stop after the shared graph budget is reached.
-
-### Allowed actions
-Read-only searches and object reads only. Recommend human-reviewed next steps; do not execute remediation. Do not expose secrets or persist full raw logs.
+1. **VolumeAttachment Detached:** `status.attached == false` OR the `VolumeAttachment` object is deleted from the cluster.
+2. **Pod Termination:** The blocker pod finishes termination and is removed from `spec.nodeName == draining_node`.
+3. **MCO Drain Resumes:** `index=ocp_logs` records MCC progressing with node drain.

@@ -11,10 +11,12 @@
 ## Graph tests
 - Missing cluster -> inconclusive; no tool invocation.
 - Unknown skill -> no unbounded exploration.
-- Required evidence missing -> at most three rounds then inconclusive.
+- Unified multi-index Splunk query executes in a single call and finishes within the 15-second budget.
+- Playbook Catalog matcher evaluates diagnosed root causes against `remediations/PLAYBOOK_CATALOG.json` and outputs valid `aap_extra_vars`.
+- If no playbook matches or risk is high, matcher generates targeted manual `oc` CLI runbook with rollback instructions.
+- Required evidence missing -> at most two rounds then inconclusive.
 - All evidence sources unavailable -> report tool failures, not “no issue found”.
-- Material contradiction -> one bounded discriminating query if budget remains.
-- Tool-call and deadline budgets always terminate the graph.
+- Tool-call (max 2) and deadline (45s) budgets always terminate the graph.
 - Tool registry containing a mutating operation causes startup/configuration failure.
 
 ## Integration tests (PDB first)

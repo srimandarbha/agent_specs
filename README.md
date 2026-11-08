@@ -33,51 +33,25 @@ This is an evidence-driven design pack for an OpenShift SRE diagnostic agent. It
 4. Distinguish facts from hypotheses. Report evidence timestamps, commands and output excerpts; state confidence and missing evidence.
 5. Never treat `oc delete pod --force --grace-period=0` as a harmless restart. It removes the API object without proving the process stopped on an unreachable node.
 6. Use version-matched runbooks and source. `main` may differ from the cluster's shipped MCO.
-7. The agent recommends actions; disruptive remediation requires human approval and a recorded rollback/verification plan.
+7. The agent operates in a read-only diagnostic mode and maps remediations to either an approved Ansible Playbook or an exact manual `oc` CLI fallback runbook.
 
-## Suggested pack layout
+## Enhanced agent design & Architecture
 
-```text
-mco-drain-troubleshooting-pack/
-  README.md
-  SOURCE_REVIEW.md
-  use-cases/
-    01-pdb-eviction-blocked/
-      SPEC.md
-      design.md
-      plan.md
-      skill.md
-    ...
-```
-
-## Important source nuance
-
-The current upstream drain controller's `Force: true` config is part of the Kubernetes drain helper configuration and must not be interpreted as permission to force-delete any arbitrary pod from the API. The code uses the desired-drainer and last-applied-drainer annotations as a coordination contract. If an external actor uncordons a node during drain, the controller intentionally avoids recording successful completion because workloads might have rescheduled onto it.
-
-
-## Enhanced agent design (2026-11-03)
-
-The pack now includes a shared 12-node LangGraph design, conditional routing/exit conditions, bounded retries and deadlines, tool contracts for Splunk MCP / Prometheus MCP and a separate Kubernetes object collector, a PostgreSQL migration, and a test strategy. All 15 use cases have graph integration contracts and case-specific diagnosis gates. The first vertical slice is PDB/eviction blocked.
+The pack utilizes a deterministic 10-node LangGraph design optimized for low-latency multi-cluster diagnostics:
 
 ### Selected operating decisions
-- Trigger: alert-driven and engineer-triggered.
-- Evidence: Splunk container logs + normalized Kubernetes object snapshots/changes/Events from a separate read-only collector + Prometheus metrics. The agent itself has only Splunk MCP and Prometheus MCP.
-- Operating mode: diagnosis and recommendations only; no remediation execution.
-- Coverage: all 15 use cases documented.
-- Memory: SQL-based episodic/curated memory first; pgvector deferred.
-- First executable slice: PDB-blocked drain.
+- **Trigger:** Alert-driven (`MachineConfigControllerDrainError`) and engineer-triggered.
+- **Evidence Pipeline:** Unified Splunk Multi-Index Search (`index=ocp_logs`, `index=k8s_objects` / KV Store, `index=ocp_metrics`) executing in a single round-trip (< 10 seconds).
+- **Data Minimization (Golden Six):** Object collection in OpenTelemetry is restricted to `Pod`, `PodDisruptionBudget`, `Node`, `VolumeAttachment`, `MachineConfigPool`, and `Event`, with `metadata.managedFields` stripped to prevent OOMKills.
+- **Remediation Model:** Two-tier handoff via [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json). Clean matches generate Ansible Automation Platform (AAP / AWX) execution specs. Unmatched or high-risk cases generate precise manual `oc` CLI runbooks with safety guardrails.
+- **Memory:** SQL-based episodic/curated memory in PostgreSQL (`db/migrations/001_initial.sql`).
+- **First vertical slice:** `01-pdb-eviction-blocked`.
 
-### Additional files
-- `architecture/LANGGRAPH_DESIGN.md`: node state, edges, budgets and safety policy.
-- `contracts/TOOL_CONTRACTS.md`: Splunk/Prometheus MCP adapter contracts and the separate object-collector boundary.
-- `docs/OBSERVABILITY_REQUIREMENTS.md`: fleet-wide object/event allowlist, case matrix, field requirements, collector contract, security controls and acceptance tests.
-- `db/migrations/001_initial.sql`: initial PostgreSQL schema.
-- `db/README.md`: memory separation and retrieval approach.
-- `tests/TEST_STRATEGY.md`, `tests/fixtures/pdb-blocked.json`: acceptance and safety tests.
-
-**Important:** this is a design/documentation and schema pack, not a fully runnable production agent. The user's actual MCP tool schemas, cluster RBAC, release-matched runbook validation, deployment manifests, Python/LangGraph implementation and integration test execution remain prerequisites.
-
-
-## Kubernetes object observability
-
-All 15 scenarios now define case-specific Kubernetes object observability requirements in each scenario's `SPEC.md`, `design.md`, `plan.md` and `skill.md`. The shared inventory and ingestion design is in `docs/OBSERVABILITY_REQUIREMENTS.md`. The diagnostic agent does not call the Kubernetes API; it reads structured object history and Events from Splunk MCP and metrics from Prometheus MCP.
+### Key System Files
+- `intent.md`: High-level architectural intent and design decisions.
+- `architecture/LANGGRAPH_DESIGN.md`: Node state, edges, budgets, and safety policy.
+- `contracts/TOOL_CONTRACTS.md`: Multi-index SPL and KV Store contracts, AAP remediation specs.
+- `remediations/PLAYBOOK_CATALOG.json`: Catalog of approved Ansible Playbooks and variable schemas.
+- `docs/OBSERVABILITY_REQUIREMENTS.md`: Streamlined Golden Six allowlist and OTel configuration.
+- `db/migrations/001_initial.sql`: PostgreSQL schema for incident memory and recommendations.
+- `tests/TEST_STRATEGY.md`: Acceptance, security, and integration testing gates.

@@ -1,31 +1,114 @@
-# Read-only tool contracts
+# Read-Only Tool Contracts & Remediation Specification
 
-The agent tool names and schemas must be mapped to the actual Splunk MCP and Prometheus MCP. The agent has no Kubernetes API/MCP tool. A separate read-only collector forwards allowlisted Kubernetes object snapshots, changes and Events into Splunk; its deployment/RBAC contract is documented in `../docs/OBSERVABILITY_REQUIREMENTS.md`.
+The agent operates in a **strictly read-only mode** during evidence gathering. It interacts with Splunk using parameterized templates. It has no direct Kubernetes client, no cluster-admin tokens, and no mutation capabilities. 
 
-## Common envelope
+All remediation is generated as a structured specification (either an Ansible Automation Platform job spec or a manual CLI runbook) and handed off to human SREs or AAP.
 
-Inputs: `cluster_id` (allow-listed), `time_start`, `time_end`, `request_id`, bounded query parameters. Outputs: `tool_name`, `request_id`, `status` (`ok|timeout|permission_denied|invalid_query|unavailable|error`), `observed_at`, `source_reference`, `records[]`, `truncated`, `error_code`. All timestamps UTC ISO-8601; enforce maximum time span and result count.
+---
 
-## Splunk log search
+## 1. Unified Multi-Index Splunk Search (`query_unified_splunk_dossier`)
 
-- Input: approved SPL template ID, named parameters (cluster/node/pod/container/time range), max results.
-- Output each result with event timestamp, index/sourcetype, cluster/resource identifiers, redacted message excerpt, stable event/reference ID when available.
-- Do not accept arbitrary user-provided SPL without validation. Escape literals or use parameterized templates; prohibit searches that omit cluster/time constraints unless explicitly approved.
+Instead of multiple sequential queries, the agent issues a single multi-index SPL search spanning container logs, K8s object snapshots/KV Store, and Prometheus metrics.
 
-## Prometheus query
+### Input Contract
+* `cluster_id` (string, required, validated against cluster allowlist).
+* `node_name` (string, optional, target draining node).
+* `time_window`: Enforces `earliest=-1h latest=now` for logs and metrics; `earliest=-24h` for K8s objects (or direct KV Store lookup).
+* `max_records`: Hard-capped at 200 records.
 
-- Input: approved query/template ID, validated label values, start/end/step or instant timestamp, max series/sample count.
-- Output: metric name, labels, timestamp, value, query reference, query evaluation status.
-- Use approved PromQL templates. Bound range, resolution and series count. Missing series is `unknown`, not zero.
+### Output Contract
+Returns a normalized JSON list of correlated incident records:
+```json
+{
+  "status": "ok",
+  "observed_at": "2026-11-07T22:00:00Z",
+  "execution_time_ms": 4200,
+  "records": [
+    {
+      "cluster_id": "ocp-prod-01",
+      "target_namespace": "payments",
+      "target_resource": "payments-api-7b89-xyz",
+      "first_seen": "2026-11-07T21:10:00Z",
+      "last_seen": "2026-11-07T21:58:30Z",
+      "controller_eviction_errors": [
+        "Cannot evict pod as it would violate the pod's disruption budget."
+      ],
+      "objects_observed": ["Pod", "PodDisruptionBudget"],
+      "pdb_disruptions_allowed": [0],
+      "pdb_min_available": [1],
+      "active_finalizers": [],
+      "deletion_timestamp": null,
+      "storage_errors": [],
+      "desired_drain_annotation": ["true"],
+      "last_applied_drain_annotation": ["true"],
+      "relevant_metrics": [
+        "kube_pod_disruption_budget_status_pod_disruptions_allowed=0"
+      ]
+    }
+  ]
+}
+```
 
-## Kubernetes object evidence via Splunk
+---
 
-- Agent input: approved Splunk query template ID and bounded cluster/resource/time parameters.
-- Expected records: normalized object snapshots/change records/Events emitted by the separate collector, with cluster ID, kind, namespace/name/UID, resourceVersion when available, source event time, observed time and ingestion time.
-- Query only approved fields and resource kinds; validate selector semantics in the diagnosis logic rather than relying on string matches.
-- The collector, not the agent, has narrowly scoped Kubernetes `GET`/`LIST` and optionally `WATCH` permissions. No Secret reads or write verbs. See `../docs/OBSERVABILITY_REQUIREMENTS.md`.
-- A missing historical snapshot is an evidence gap, not proof that a condition was absent.
+## 2. Splunk KV Store Lookup Contract (`k8s_live_inventory_lookup`)
 
-## Error and retry policy
+For environments using the Splunk KV Store for zero-compute object state:
+* **Lookup Name:** `k8s_live_inventory_lookup`
+* **Input Keys:** `cluster_id`, `namespace`, `name`
+* **Output Fields:** `pdb_disruptions_allowed`, `pod_finalizers`, `pod_deletion_timestamp`, `node_desired_drain`, `node_last_applied_drain`, `storage_detach_error`, `updated_at`.
+* **Latency SLA:** < 50 milliseconds.
 
-Retry only timeout, rate-limit and transient server errors, max two retries with exponential backoff + jitter. Do not retry authorization/validation failures. Record every failed attempt in `tool_errors`; never reinterpret failure as a negative finding. Circuit-break repeated failures for a tool during one investigation.
+---
+
+## 3. Remediation Output Contract
+
+The LangGraph node `match_remediation_plan` outputs a structured payload with two mutually exclusive paths:
+
+### Path A: Approved Playbook Matched (`aap_launch_spec`)
+Returned when the diagnosed root cause matches [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json) and all preconditions pass:
+```json
+{
+  "remediation_type": "ANSIBLE_PLAYBOOK",
+  "playbook_id": "playbook_pdb_scale_up",
+  "playbook_file": "playbooks/remediate-pdb-scale-up.yml",
+  "risk_level": "low",
+  "requires_approval": true,
+  "aap_extra_vars": {
+    "target_cluster": "ocp-prod-01",
+    "target_namespace": "payments",
+    "workload_kind": "Deployment",
+    "workload_name": "payments-api",
+    "target_pdb_name": "payments-api-pdb",
+    "current_replicas": 2,
+    "scale_to": 3
+  },
+  "verification_goal": "pdb_disruptions_allowed > 0 and mcc_drain_resumed == true"
+}
+```
+
+### Path B: No Playbook Matched / High Risk (`manual_cli_fallback`)
+Returned when no playbook exists (or the action is dangerous, such as clearing finalizers or force-deleting pods):
+```json
+{
+  "remediation_type": "MANUAL_CLI_RUNBOOK",
+  "risk_level": "high",
+  "reason": "Clearing pod finalizers risks data corruption; human investigation required.",
+  "pre_checks": [
+    "oc -n orders get pod order-proc-xyz -o jsonpath='{.metadata.finalizers}'",
+    "oc adm node-logs worker-02 --path=journal | grep order-proc-xyz"
+  ],
+  "remediation_command": "oc -n orders patch pod order-proc-xyz -p '{\"metadata\":{\"finalizers\":null}}' --type=merge",
+  "safety_warnings": "Ensure the underlying backend task has completed before clearing.",
+  "rollback_plan": "If external task hung, restart the operator controller.",
+  "post_verification": "oc get pod order-proc-xyz -n orders"
+}
+```
+
+---
+
+## 4. Error and Retry Policy
+
+* **Transient Failures:** Retry HTTP 429, 502, 503, 504 at most once with exponential backoff (1s, 2s) + jitter.
+* **Non-Retryable Errors:** Immediately halt and report `inconclusive` on authentication, permission denied, or malformed queries.
+* **Budget Exhaustion:** If the Splunk query times out or fails after retry, return an explicit tool error record. Never fabricate an empty result as "no issue found".

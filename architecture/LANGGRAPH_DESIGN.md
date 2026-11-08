@@ -1,62 +1,106 @@
-# LangGraph architecture and routing contract
+# LangGraph Architecture and Routing Contract
 
-## Chosen pattern
+## Chosen Pattern
 
-Use a **deterministic workflow graph with bounded evidence/diagnosis loops**. The LLM may classify, summarize, and rank hypotheses, but cannot invent tool results, bypass gates, or execute mutations. There are no autonomous remediation nodes in this release. The supported outputs are diagnosis, evidence gaps, and recommendations.
+Use a **deterministic workflow graph with bounded evidence and remediation matching**. The LLM may classify, summarize, rank hypotheses, and map variables, but cannot invent tool results, bypass gates, or execute arbitrary cluster mutations. 
 
-## Logical nodes (12)
+The agent operates in a **read-only diagnostic mode**: it produces a verified root-cause diagnosis and maps the resolution to either an approved **Ansible Playbook spec** (for automated or human-approved AAP execution) or an exact **manual `oc` CLI fallback runbook**.
 
-1. `ingest_event`: accept alert or engineer request; assign `investigation_id` and idempotency key.
-2. `normalize_context`: validate cluster/node/MCP identity, event time, OpenShift version, source and correlation identifiers.
-3. `classify_lifecycle`: classify `drain`, `config_apply`, `pivot_reboot`, `uncordon`, `mcp_rollout`, `cluster_upgrade`, or `unknown`.
-4. `load_skill`: load an allow-listed, versioned skill whose `use_case_id` and supported version range match.
-5. `build_evidence_plan`: create a bounded list of read-only calls from the skill's required evidence contract.
-6. `query_splunk`: call the configured Splunk MCP log-search tool using validated, parameterized queries.
-7. `query_prometheus`: call the configured Prometheus MCP query tool with approved PromQL and time bounds.
-8. `query_splunk_object_history`: retrieve normalized Kubernetes object snapshots, changes and Events from Splunk MCP. The agent has no direct Kubernetes API tool; a separate read-only collector forwards allowlisted object evidence into Splunk.
-9. `assess_evidence`: validate timestamps, cluster identity, freshness, completeness, and contradictions; deduplicate evidence.
-10. `diagnose`: generate ranked hypotheses only from recorded evidence and skill rules.
-11. `validate_diagnosis`: apply per-skill decision conditions, confidence/coverage gates, and stop rules.
-12. `persist_and_report`: persist evidence and outcome, then return diagnosis, confidence, citations/references, unknowns and safe recommendations.
+---
 
-The graph can combine nodes 6–8 concurrently only when the selected skill declares the calls independent. If a tool is unavailable, record a tool error and continue only if the remaining evidence is sufficient; never silently substitute guessed evidence.
+## Logical Nodes (10)
 
-## Conditional edges
+1. `ingest_event`: Accept alert or engineer request; assign `investigation_id` and idempotency key.
+2. `normalize_context`: Validate cluster/node/MCP identity, event time, OpenShift version, source, and correlation identifiers.
+3. `classify_lifecycle`: Classify lifecycle stage (`drain`, `config_apply`, `pivot_reboot`, `uncordon`, `mcp_rollout`, `cluster_upgrade`, or `unknown`).
+4. `load_skill`: Load an allow-listed, versioned skill whose `use_case_id` and supported version range match.
+5. `build_evidence_plan`: Formulate bounded query parameters for the unified Splunk multi-index search and KV Store lookup.
+6. `query_unified_splunk_dossier`: Execute a **single round-trip multi-index SPL search** spanning `ocp_logs` (last 1h), `k8s_objects` / KV Store lookup (last 24h / live state for the Golden Six objects), and `ocp_metrics` (last 1h).
+7. `assess_evidence`: Validate timestamps, cluster identity, freshness, completeness, and contradictions; deduplicate evidence.
+8. `diagnose`: Generate ranked hypotheses strictly from recorded evidence and deterministic skill decision rules.
+9. `match_remediation_plan`: Evaluate the diagnosed root cause against the **Ansible Playbook Catalog**:
+   - **If an approved playbook matches:** Output the playbook ID, risk classification, and validated `extra_vars` ready for Ansible Automation Platform (AAP / AWX) execution.
+   - **If no playbook matches or risk is high:** Generate an exact, copy-pasteable manual `oc` CLI fallback runbook with safety preconditions and verification steps.
+10. `persist_and_report`: Persist incident metadata, evidence citations, and remediation specs to PostgreSQL, returning the final diagnostic report.
 
-- `ingest_event -> normalize_context`; invalid/missing cluster identity routes to `persist_and_report` with `inconclusive: invalid_context`.
-- `normalize_context -> classify_lifecycle`; unsupported/ambiguous lifecycle routes to a limited evidence plan or `inconclusive: lifecycle_unknown`.
-- `classify_lifecycle -> load_skill`; no safe skill match routes to `persist_and_report` with `no_matching_skill`.
-- `load_skill -> build_evidence_plan`; incompatible OpenShift version or unverified skill routes to `persist_and_report` with `version_gate_failed` unless the skill explicitly allows general read-only evidence gathering.
-- `build_evidence_plan -> evidence nodes`; call only tools required by the skill and available under configured policy.
-- evidence nodes -> `assess_evidence`.
-- `assess_evidence -> build_evidence_plan` if required evidence is missing and `attempt_count < max_evidence_rounds` and `now < deadline`; otherwise -> `diagnose` if minimum evidence is met, else -> `persist_and_report` as inconclusive.
-- `diagnose -> validate_diagnosis`.
-- `validate_diagnosis -> build_evidence_plan` when a discriminating read-only query can resolve a material contradiction and budget remains; -> `persist_and_report` when evidence supports a diagnosis, or when the loop budget is exhausted (label uncertain/inconclusive as appropriate).
-- `persist_and_report -> END`.
+---
 
-## Bounds and defaults (configurable, not OpenShift product defaults)
+## Conditional Edges & Routing
 
-- Maximum evidence rounds: 3 total rounds; maximum 8 tool calls per investigation; max 2 calls per tool per round.
-- Per MCP call timeout: 15 seconds; at most 2 retries for transient timeout/429/5xx with exponential backoff and jitter. Do not retry validation/auth/permission errors. Overall investigation deadline: 90 seconds for interactive requests; event-driven jobs may use a separately configured deadline.
-- Evidence window default: event time ±15 minutes, capped at a skill-declared maximum; allow longer windows only when the lifecycle stage and query justify it.
-- Evidence freshness: object state should be read at investigation time; telemetry must include event/ingestion timestamps and show its observed age. A stale result is not silently treated as current.
-- Confidence is calibrated from explicit rule support/contradictions and evidence coverage; never present a raw LLM score as calibrated probability. If confidence is not calibrated against evaluation data, report `low/medium/high` with the rule basis.
-- Hard stop: any mutation tool appears in a tool registry, a skill requests mutation, cluster identity is uncertain, or evidence crosses cluster boundaries. Return safe findings and flag the policy violation; do not execute.
+```
+[ingest_event]
+       │
+       ▼
+[normalize_context] ──(invalid context)──► [persist_and_report] (inconclusive: invalid_context)
+       │
+       ▼
+[classify_lifecycle] ──(unsupported)─────► [persist_and_report] (inconclusive: lifecycle_unknown)
+       │
+       ▼
+[load_skill] ──────────(no skill match)──► [persist_and_report] (no_matching_skill)
+       │
+       ▼
+[build_evidence_plan]
+       │
+       ▼
+[query_unified_splunk_dossier]
+       │
+       ▼
+[assess_evidence] ─────(missing data & budget remains)──► [build_evidence_plan] (max 2 rounds)
+       │
+       ▼ (evidence sufficient)
+[diagnose]
+       │
+       ▼
+[match_remediation_plan] ──► (Generates AAP extra_vars OR manual CLI fallback)
+       │
+       ▼
+[persist_and_report] ─────► END
+```
 
-## State contract
+* `ingest_event -> normalize_context`: Invalid/missing cluster identity routes directly to `persist_and_report` with `inconclusive: invalid_context`.
+* `normalize_context -> classify_lifecycle`: Unsupported lifecycle routes to `persist_and_report`.
+* `classify_lifecycle -> load_skill`: No safe skill match routes to `persist_and_report`.
+* `load_skill -> build_evidence_plan`: Loads required evidence schema and supported playbook rules.
+* `build_evidence_plan -> query_unified_splunk_dossier`: Single multi-index search execution.
+* `query_unified_splunk_dossier -> assess_evidence`: Parses returned dossier into structured state.
+* `assess_evidence -> build_evidence_plan`: Triggers one bounded follow-up query if a material contradiction exists and budget remains; otherwise proceeds to `diagnose`.
+* `diagnose -> match_remediation_plan`: Evaluates playbook preconditions against facts.
+* `match_remediation_plan -> persist_and_report`: Outputs structured findings and remediation spec.
+* `persist_and_report -> END`.
 
-`InvestigationState` should include: `investigation_id`, `idempotency_key`, `trigger_type`, `event_payload_redacted`, `cluster_id`, `cluster_name`, `openshift_version`, `node_name`, `mcp_name`, `lifecycle_stage`, `use_case_id`, `skill_version`, `started_at`, `deadline_at`, `evidence_plan`, `evidence[]`, `tool_errors[]`, `hypotheses[]`, `contradictions[]`, `evidence_round`, `tool_call_count`, `diagnosis_status`, `root_cause_hypothesis`, `confidence_band`, `missing_evidence[]`, `recommendations[]`, `safety_flags[]`, `persist_status`.
+---
 
-Store evidence references and concise summaries, not unbounded raw logs. Redact credentials, tokens, authorization headers, secrets, and sensitive workload data before persistence. Raw evidence retention is governed by the source system policy.
+## Execution Bounds and Latency Targets
 
-## Node contract
+* **Investigation Deadline:** 45 seconds total execution time (dramatically reduced from 90s because multi-index query takes <10s).
+* **Tool Call Budget:** Max **2 Splunk tool calls total** per investigation (1 primary multi-index query + at most 1 bounded follow-up).
+* **Per-Query Timeout:** 15 seconds. Retry at most once for transient timeout/5xx errors with exponential backoff and jitter. Never retry authentication or query validation errors.
+* **Evidence Time Windows:**
+  * Logs (`index=ocp_logs`): `earliest=-1h latest=now`.
+  * Object State (`index=k8s_objects` or KV Store): `earliest=-24h latest=now` (or instant KV Store lookup).
+  * Metrics (`index=ocp_metrics`): `earliest=-1h latest=now`.
+* **Hard Stop Safety:** The agent contains zero mutation tools. No `oc delete`, `oc patch`, or direct API writes. All remediation is handed off as a declarative spec.
 
-Every node returns a partial state update and structured errors. Tool nodes must never return free-form strings alone. Minimum evidence record: `evidence_id`, `source` (`splunk|prometheus`), `tool_name`, `query_or_request_redacted`, `cluster_id`, `resource_ref`, `event_time`, `observed_at`, `ingested_at` if available, `result_summary`, `source_uri` or query/run reference, `freshness`, `content_hash`, `redaction_status`.
+---
 
-## Operating and safety model
+## State Contract (`InvestigationState`)
 
-- Read-only permissions only; separate service accounts per cluster or narrowly scoped identity, TLS verification, secret manager for credentials, no secrets in prompts or DB.
-- The agent has no Kubernetes client. A separate object collector uses explicit GET/LIST and optionally WATCH only for allowlisted resources; it has no PATCH/UPDATE/DELETE/CREATE/EXEC/PORT-FORWARD. If the MCP server has mixed capabilities, enforce a local allow-list and test it.
-- No AAP execution, ServiceNow change creation, pod deletion, PDB patch, finalizer clearing, node uncordon, MCP changes, VM changes, reboot, or storage detach in this diagnostic graph.
-- Use an explicit allow-list of cluster IDs. Every tool request includes the validated cluster scope; reject cross-cluster queries.
-- PostgreSQL is the system of record for cases/evidence metadata, not a replacement for live telemetry or authoritative Kubernetes state.
+The graph state encompasses:
+* **Context:** `investigation_id`, `idempotency_key`, `trigger_type`, `cluster_id`, `cluster_name`, `openshift_version`, `node_name`, `mcp_name`, `lifecycle_stage`, `use_case_id`, `started_at`, `deadline_at`.
+* **Evidence:** `dossier_raw`, `controller_log_errors[]`, `pdb_status`, `pod_status`, `node_annotations`, `volume_status`, `metrics_summary`, `tool_errors[]`.
+* **Diagnosis:** `hypotheses[]`, `root_cause_hypothesis`, `confidence_band` (`high|medium|low`), `missing_evidence[]`.
+* **Remediation Specification:**
+  * `playbook_match_status` (`matched | no_match | approval_required`).
+  * `playbook_spec`: `{ playbook_id, playbook_file, risk_level, aap_extra_vars: {} }`.
+  * `manual_cli_fallback`: `{ step_descriptions[], commands[], safety_warnings[], verification_checks[] }`.
+* **Outcome:** `persist_status`, `final_summary`.
+
+---
+
+## Operating and Safety Model
+
+1. **Read-Only Ingestion:** Splunk MCP credentials require read-only search permissions restricted to `ocp_logs`, `k8s_objects`, and `ocp_metrics`.
+2. **Deterministic Remediation Mapping:** The LLM cannot invent playbook names. It must select from the static `PLAYBOOK_CATALOG.json` schema.
+3. **Auditability:** Every diagnosis outputs exact timestamped log lines, object resourceVersions, and metric values supporting the conclusion.
+4. **PostgreSQL System of Record:** Metadata, hypotheses, and generated remediation specs are persisted to PostgreSQL using `db/migrations/001_initial.sql`.
