@@ -1,0 +1,111 @@
+{
+  "status": "ok",
+  "observed_at": "2026-11-08T09:30:00Z",
+  "execution_time_ms": 3840,
+  "query_metadata": {
+    "search_id": "sid_mco_drain_ocp_prod_01_1762594200",
+    "indices_searched": ["ocp_logs", "k8s_objects", "ocp_metrics"],
+    "cluster_id": "ocp-prod-01",
+    "node_name": "worker-01.prod.rhocp",
+    "time_range": {
+      "earliest": "2026-11-08T08:30:00Z",
+      "latest": "2026-11-08T09:30:00Z"
+    },
+    "total_matching_events": 142,
+    "records_returned": 1
+  },
+  "records": [
+    {
+      "cluster_id": "ocp-prod-01",
+      "target_namespace": "payments",
+      "target_resource": "payments-api-7b89-xyz",
+      "node_name": "worker-01.prod.rhocp",
+      "first_seen": "2026-11-08T09:15:00Z",
+      "last_seen": "2026-11-08T09:29:45Z",
+      "controller_eviction_errors": [
+        "Cannot evict pod \"payments/payments-api-7b89-xyz\": Cannot evict pod as it would violate the pod's disruption budget."
+      ],
+      "objects_observed": [
+        "Pod",
+        "PodDisruptionBudget",
+        "Node",
+        "MachineConfigPool"
+      ],
+      "pod_details": {
+        "name": "payments-api-7b89-xyz",
+        "namespace": "payments",
+        "owner_kind": "Deployment",
+        "owner_name": "payments-api",
+        "labels": {
+          "app": "payments-api",
+          "tier": "backend"
+        },
+        "phase": "Running"
+      },
+      "pdb_details": {
+        "name": "payments-api-pdb",
+        "namespace": "payments",
+        "selector": {
+          "matchLabels": {
+            "app": "payments-api"
+          }
+        },
+        "min_available": 2,
+        "max_unavailable": null,
+        "current_healthy": 2,
+        "desired_healthy": 2,
+        "disruptions_allowed": 0,
+        "snapshot_age_s": 45,
+        "overlapping_pdb_count": 1
+      },
+      "node_details": {
+        "name": "worker-01.prod.rhocp",
+        "unschedulable": true,
+        "conditions": {
+          "Ready": "True",
+          "DiskPressure": "False",
+          "MemoryPressure": "False",
+          "PIDPressure": "False"
+        }
+      },
+      "mcp_details": {
+        "name": "worker",
+        "paused": false,
+        "updating": true,
+        "degraded": false,
+        "machine_count": 12,
+        "ready_machine_count": 11,
+        "updated_machine_count": 8,
+        "degraded_machine_count": 0
+      },
+      "workload_details": {
+        "kind": "Deployment",
+        "name": "payments-api",
+        "namespace": "payments",
+        "desired_replicas": 2,
+        "ready_replicas": 2,
+        "updated_replicas": 2
+      },
+      "sibling_pods": [
+        {
+          "name": "payments-api-7b89-abc",
+          "node_name": "worker-02.prod.rhocp",
+          "phase": "Running",
+          "ready": true,
+          "restart_count": 0
+        }
+      ],
+      "capacity_details": {
+        "free_cpu_m": 4200,
+        "pod_request_cpu_m": 500,
+        "free_mem_mi": 12800,
+        "pod_request_mem_mi": 1024,
+        "has_buffer": true
+      },
+      "relevant_metrics": [
+        "kube_pod_disruption_budget_status_pod_disruptions_allowed{namespace=\"payments\",poddisruptionbudget=\"payments-api-pdb\"}=0",
+        "kube_deployment_status_replicas_available{namespace=\"payments\",deployment=\"payments-api\"}=2"
+      ]
+    }
+  ]
+}

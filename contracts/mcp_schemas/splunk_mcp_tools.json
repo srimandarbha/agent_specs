@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Splunk MCP Tool Specifications",
+  "description": "Authoritative tool schemas for Splunk MCP read-only diagnostic integration",
+  "tools": [
+    {
+      "name": "query_unified_splunk_dossier",
+      "description": "Executes a single, bounded multi-index SPL search spanning container logs, k8s object snapshots, and metrics for a target cluster and draining node.",
+      "parameters": {
+        "type": "object",
+        "required": ["cluster_id"],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "Target OpenShift cluster identifier (e.g. ocp-prod-01)"
+          },
+          "node_name": {
+            "type": "string",
+            "description": "Optional target draining node name (e.g. worker-01.prod.rhocp)"
+          },
+          "time_window": {
+            "type": "string",
+            "enum": ["-15m", "-30m", "-1h", "-2h"],
+            "default": "-1h",
+            "description": "Time range window for log and metric retrieval"
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 100,
+            "description": "Hard upper limit on records returned"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "k8s_live_inventory_lookup",
+      "description": "Performs a low-latency Splunk KV Store lookup for current Kubernetes object state without heavy index searches.",
+      "parameters": {
+        "type": "object",
+        "required": ["cluster_id", "kind", "name"],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "Target OpenShift cluster ID"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["Pod", "PodDisruptionBudget", "Node", "MachineConfigPool", "MachineConfig", "VolumeAttachment", "VirtualMachineInstance"],
+            "description": "Kubernetes Kind to query"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Resource namespace (omit for cluster-scoped resources like Node or MachineConfigPool)"
+          },
+          "name": {
+            "type": "string",
+            "description": "Resource name"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "query_broad_anomaly_dossier",
+      "description": "Executed deterministically by Track B when an incident does not match known use cases. Retrieves top error logs, warning events, and resource metrics.",
+      "parameters": {
+        "type": "object",
+        "required": ["cluster_id", "node_name"],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "Target OpenShift cluster ID"
+          },
+          "node_name": {
+            "type": "string",
+            "description": "Target node experiencing drain stall or rollout block"
+          },
+          "time_window": {
+            "type": "string",
+            "enum": ["-30m", "-1h"],
+            "default": "-1h",
+            "description": "Time range window"
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 50,
+            "description": "Hard upper cap on anomaly records"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

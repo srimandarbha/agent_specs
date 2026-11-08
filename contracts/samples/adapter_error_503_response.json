@@ -1,0 +1,10 @@
+{
+  "status": "error",
+  "error_code": "BACKEND_SERVICE_UNAVAILABLE",
+  "error_message": "Splunk Search Head cluster returned HTTP 503 Service Unavailable: Search peer idx-04 is unresponsive.",
+  "adapter_name": "splunk_mcp",
+  "occurred_at": "2026-11-08T09:30:04Z",
+  "retryable": true,
+  "retry_count": 1,
+  "execution_time_ms": 15002
+}

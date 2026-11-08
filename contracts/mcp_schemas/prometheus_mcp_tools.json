@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prometheus MCP Tool Specifications",
+  "description": "Authoritative tool schemas for Prometheus MCP read-only diagnostic integration",
+  "tools": [
+    {
+      "name": "query_prometheus_instant",
+      "description": "Evaluates an instant PromQL metric expression at an optional single evaluation point in time.",
+      "parameters": {
+        "type": "object",
+        "required": ["cluster_id", "query"],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "Target OpenShift cluster ID"
+          },
+          "query": {
+            "type": "string",
+            "description": "Parameterized PromQL expression (e.g. kube_pod_disruption_budget_status_pod_disruptions_allowed{namespace=\"payments\"})"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional evaluation timestamp (defaults to current time)"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 15,
+            "default": 10,
+            "description": "Query timeout in seconds"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "query_prometheus_range",
+      "description": "Evaluates a PromQL expression over a time range with a defined step interval.",
+      "parameters": {
+        "type": "object",
+        "required": ["cluster_id", "query", "start", "end", "step"],
+        "properties": {
+          "cluster_id": {
+            "type": "string",
+            "description": "Target OpenShift cluster ID"
+          },
+          "query": {
+            "type": "string",
+            "description": "PromQL range query expression"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Start timestamp in ISO 8601 format"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "End timestamp in ISO 8601 format"
+          },
+          "step": {
+            "type": "string",
+            "pattern": "^[0-9]+[smhd]$",
+            "description": "Query resolution step interval e.g. 15s, 1m"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 15,
+            "default": 10,
+            "description": "Query execution timeout"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -212,6 +212,9 @@
     "deployment": "docs/DEPLOYMENT.md",
     "agent_observability": "docs/AGENT_OBSERVABILITY.md",
     "remediation_execution": "remediations/REMEDIATION_EXECUTION.md",
-    "development_blueprint": "DEVELOPMENT_BLUEPRINT.md"
+    "development_blueprint": "DEVELOPMENT_BLUEPRINT.md",
+    "reason_codes": "contracts/REASON_CODES.md",
+    "skill_rules": "contracts/SKILL_RULES.md",
+    "phase_task_cards": "docs/PHASE_TASK_CARDS.md"
   }
 }

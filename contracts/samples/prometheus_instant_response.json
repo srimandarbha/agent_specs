@@ -1,0 +1,46 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "__name__": "kube_pod_disruption_budget_status_pod_disruptions_allowed",
+          "cluster_id": "ocp-prod-01",
+          "namespace": "payments",
+          "poddisruptionbudget": "payments-api-pdb",
+          "endpoint": "https-main"
+        },
+        "value": [
+          1762594200.0,
+          "0"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "kube_pod_disruption_budget_status_expected_pods",
+          "cluster_id": "ocp-prod-01",
+          "namespace": "payments",
+          "poddisruptionbudget": "payments-api-pdb"
+        },
+        "value": [
+          1762594200.0,
+          "2"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "kube_node_status_condition",
+          "cluster_id": "ocp-prod-01",
+          "node": "worker-01.prod.rhocp",
+          "condition": "Ready",
+          "status": "true"
+        },
+        "value": [
+          1762594200.0,
+          "1"
+        ]
+      }
+    ]
+  }
+}

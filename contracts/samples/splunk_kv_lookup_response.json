@@ -1,0 +1,35 @@
+{
+  "status": "ok",
+  "lookup_table": "k8s_live_inventory_lookup",
+  "query_key": {
+    "cluster_id": "ocp-prod-01",
+    "kind": "PodDisruptionBudget",
+    "namespace": "payments",
+    "name": "payments-api-pdb"
+  },
+  "execution_time_ms": 18,
+  "result": {
+    "_key": "ocp-prod-01:payments:PodDisruptionBudget:payments-api-pdb",
+    "cluster_id": "ocp-prod-01",
+    "kind": "PodDisruptionBudget",
+    "namespace": "payments",
+    "name": "payments-api-pdb",
+    "uid": "a6b4c12d-7890-4e12-8765-abcdef123456",
+    "resource_version": "58921473",
+    "spec": {
+      "minAvailable": 2,
+      "selector": {
+        "matchLabels": {
+          "app": "payments-api"
+        }
+      }
+    },
+    "status": {
+      "currentHealthy": 2,
+      "desiredHealthy": 2,
+      "disruptionsAllowed": 0,
+      "expectedPods": 2
+    },
+    "updated_at": "2026-11-08T09:29:15Z"
+  }
+}

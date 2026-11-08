@@ -1,0 +1,40 @@
+{
+  "status": "ok",
+  "track": "track_b",
+  "observed_at": "2026-11-08T09:30:00Z",
+  "execution_time_ms": 2150,
+  "cluster_id": "ocp-prod-01",
+  "node_name": "worker-03.prod.rhocp",
+  "time_window": "-1h",
+  "records_count": 3,
+  "records": [
+    {
+      "source_index": "ocp_logs",
+      "timestamp": "2026-11-08T09:12:30Z",
+      "component": "machine-config-daemon",
+      "level": "error",
+      "message": "Failed to run pivot: ostree pull failed: g-io-error-quark: Server returned HTTP 504 Gateway Timeout (36)",
+      "node": "worker-03.prod.rhocp"
+    },
+    {
+      "source_index": "k8s_objects",
+      "timestamp": "2026-11-08T09:14:02Z",
+      "kind": "Event",
+      "reason": "FailedNodeDrain",
+      "message": "Drain failed on node worker-03.prod.rhocp: timeout waiting for daemonset pod to terminate",
+      "involved_object": {
+        "kind": "Node",
+        "name": "worker-03.prod.rhocp"
+      }
+    },
+    {
+      "source_index": "ocp_metrics",
+      "timestamp": "2026-11-08T09:25:00Z",
+      "metric_name": "node_disk_usage_ratio",
+      "node": "worker-03.prod.rhocp",
+      "device": "/dev/nvme0n1p4",
+      "mountpoint": "/var",
+      "value": 0.94
+    }
+  ]
+}

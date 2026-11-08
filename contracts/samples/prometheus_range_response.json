@@ -1,0 +1,25 @@
+{
+  "status": "success",
+  "data": {
+    "resultType": "matrix",
+    "result": [
+      {
+        "metric": {
+          "__name__": "kube_pod_disruption_budget_status_pod_disruptions_allowed",
+          "cluster_id": "ocp-prod-01",
+          "namespace": "payments",
+          "poddisruptionbudget": "payments-api-pdb"
+        },
+        "values": [
+          [1762590600.0, "1"],
+          [1762591200.0, "1"],
+          [1762591800.0, "0"],
+          [1762592400.0, "0"],
+          [1762593000.0, "0"],
+          [1762593600.0, "0"],
+          [1762594200.0, "0"]
+        ]
+      }
+    ]
+  }
+}
