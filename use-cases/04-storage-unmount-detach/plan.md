@@ -9,7 +9,7 @@
 - [ ] Confirm `VolumeAttachment` objects are collected without `managedFields` and cached in Splunk KV Store (`k8s_live_inventory_lookup`).
 
 ## Phase 1: Read-Only Evidence Tooling
-- [ ] Implement the parameterized **Unified Multi-Index Splunk Search** (`query_unified_splunk_dossier`).
+- [ ] Implement the parameterized **Splunk logs/object evidence query** (`query_splunk_dossier`).
 - [ ] Bound search time: `earliest=-1h latest=now` for logs/metrics; `earliest=-24h` for objects (or instant KV Store lookup).
 - [ ] Extract VolumeAttachment status (`attached`, `detachError`) and Kubelet unmount logs.
 - [ ] Redact credentials, tokens, and storage backend authentication details.

@@ -16,8 +16,8 @@ Diagnose **node becomes notready or kubelet/cri-o cannot finish drain**, isolate
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Node reports `NotReady` or `Unknown`, or MCC reports `error draining node: node is not ready`.
    - Confirm active stage is `drain` or `updating`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Inspect Node `status.conditions` where `type == "Ready"`.
    - Inspect Prometheus `up{job="kubelet"}` and node lease renewTime.
@@ -36,7 +36,7 @@ Diagnose **node becomes notready or kubelet/cri-o cannot finish drain**, isolate
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

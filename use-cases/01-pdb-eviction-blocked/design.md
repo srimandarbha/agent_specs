@@ -16,8 +16,8 @@ Diagnose **PodDisruptionBudget blocks eviction**, isolate the root cause behind 
 2. **Confirm Lifecycle Stage**
    - Trigger signal: MCC log contains `Cannot evict pod as it would violate the pod's disruption budget`.
    - Confirm active stage is `drain` (not post-drain apply/reboot/uncordon).
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Map MCC eviction error pod to PDB via label selector in the target namespace.
    - Confirm `disruptionsAllowed: 0`.
@@ -36,7 +36,7 @@ Diagnose **PodDisruptionBudget blocks eviction**, isolate the root cause behind 
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

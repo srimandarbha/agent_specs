@@ -16,8 +16,8 @@ Diagnose **drain completion annotation or uncordon coordination mismatch**, dete
 2. **Confirm Lifecycle Stage**
    - Trigger signal: MCC/MCD logs report uncordon during update or mismatch between desired/applied drain annotations.
    - Confirm active stage is `drain` or `waiting-for-drain`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Retrieve Node coordination state: `spec.unschedulable`, `desiredDrain`, `lastAppliedDrain`.
    - Traverse causal sub-tree:
@@ -35,7 +35,7 @@ Diagnose **drain completion annotation or uncordon coordination mismatch**, dete
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

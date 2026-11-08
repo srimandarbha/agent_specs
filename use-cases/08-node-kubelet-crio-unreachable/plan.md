@@ -10,7 +10,7 @@
 - [ ] Verify that Node objects and Lease records are cached in the Splunk KV Store (`k8s_live_inventory_lookup`) for instant retrieval.
 
 ## Phase 1: Read-Only Evidence Tooling
-- [ ] Implement the parameterized **Unified Multi-Index Splunk Search** (`query_unified_splunk_dossier`).
+- [ ] Implement the parameterized **Splunk logs/object evidence query** (`query_splunk_dossier`).
 - [ ] Bound search time: `earliest=-1h latest=now` for logs/metrics; `earliest=-24h` for objects (or instant KV Store lookup).
 - [ ] Normalize timestamps, cluster ID, node identity, and service names into structured state.
 - [ ] Redact secrets, authorization headers, and environment variables.

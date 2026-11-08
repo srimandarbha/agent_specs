@@ -16,8 +16,8 @@ Diagnose **os pivot, reboot or post-reboot verification fails**, isolate whether
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Node unready past reboot window, or MCD logs report pivot/reboot failure.
    - Confirm active stage is `pivot`, `reboot`, or `post-reboot-verification`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Inspect Node lease age and `state`/`reason` annotations.
    - Retrieve MCD pivot logs from Splunk.
@@ -35,7 +35,7 @@ Diagnose **os pivot, reboot or post-reboot verification fails**, isolate whether
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
 
 ---
 

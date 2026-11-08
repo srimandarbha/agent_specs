@@ -18,7 +18,7 @@ def test_splunk_mcp_tools_schema_validity():
     assert "tools" in data
     tool_names = {t["name"] for t in data["tools"]}
     expected_tools = {
-        "query_unified_splunk_dossier",
+        "query_splunk_dossier",
         "k8s_live_inventory_lookup",
         "query_broad_anomaly_dossier",
     }
@@ -27,6 +27,13 @@ def test_splunk_mcp_tools_schema_validity():
         assert "parameters" in t
         assert t["parameters"]["type"] == "object"
         assert "cluster_id" in t["parameters"]["properties"]
+    inventory = next(t for t in data["tools"] if t["name"] == "k8s_live_inventory_lookup")
+    ip = inventory["parameters"]
+    assert set(ip["required"]) == {"cluster_id", "kind"}
+    assert "name" not in ip["required"]
+    assert ip["properties"]["lookup_mode"]["enum"] == ["exact", "list"]
+    kinds = set(ip["properties"]["kind"]["enum"])
+    assert {"Lease", "CSINode", "ClusterOperator", "EndpointSlice", "DaemonSet"} <= kinds
 
 
 def test_prometheus_mcp_tools_schema_validity():

@@ -17,7 +17,7 @@ This document provides concrete, actionable engineering task cards for Phases 0 
   - `contracts/samples/`: Real sample payloads for adapter responses.
 - **Hard Invariants:**
   - All schemas must use Pydantic v2.
-  - Zero synthetic/fictional MCP tool names.
+  - Do not assume logical adapter operation names are exposed by the connected MCP server; bind and test actual discovered tool names.
   - No write tools allowed.
 - **Acceptance Tests:**
   1. `pytest tests/test_schemas.py -q` passes 100%.
@@ -35,11 +35,13 @@ This document provides concrete, actionable engineering task cards for Phases 0 
 - **Implementation Work Items:**
   1. Create `adapters/base.py`: Define `EvidenceAdapter` protocol with `query()` and `capabilities()`.
   2. Create `adapters/splunk/`:
-     - Implement `SplunkMCPAdapter` calling `query_unified_splunk_dossier`, `k8s_live_inventory_lookup`, and `query_broad_anomaly_dossier`.
-     - Enforce hard time bounds (`earliest=-1h latest=now` for logs; `-24h` for objects) and max record limits (cap 200).
+     - Implement `SplunkMCPAdapter` for log/Event search, exact object lookup and bounded object listing.
+     - Bind logical operations to actual discovered Splunk MCP tool names through deployment configuration; do not hard-code an assumed server tool name.
+     - Enforce hard time bounds and result caps for every operation.
   3. Create `adapters/prometheus/`:
-     - Implement `PrometheusMCPAdapter` calling `query_prometheus_instant` and `query_prometheus_range`.
-     - Enforce cluster labeling and metric name allowlisting.
+     - Implement `PrometheusMCPAdapter` for instant and bounded range queries.
+     - Bind actual discovered Prometheus MCP tools through deployment configuration.
+     - Enforce cluster labeling, metric-template allowlisting, range and step limits.
   4. Implement transient error handling: retry at most once for HTTP 503/timeout; fail-fast with `telemetry_backend_unavailable` without silent swallow.
 - **Hard Invariants:**
   - Strictly read-only. Absolutely no direct Kubernetes API client, tokens, or write endpoints.

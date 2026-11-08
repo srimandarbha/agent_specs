@@ -16,8 +16,8 @@ Diagnose **storage unmount or detach stalls pod termination**, isolate whether t
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Kubelet or CSI logs in `ocp_logs` match `(?i)(failed to unmount|unmountdevice failed|failed to detach|volume.*still attached|volumeattachment.*in use|device or resource busy)`.
    - Confirm active stage is `drain` / `pod_termination`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Correlate failing pod to its PVC/PV and `VolumeAttachment` object on the draining node.
    - Confirm `status.attached == true` or `status.detachError != null`.
@@ -36,7 +36,7 @@ Diagnose **storage unmount or detach stalls pod termination**, isolate whether t
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

@@ -73,7 +73,7 @@ These rules are non-negotiable architectural invariants:
 
 ### Rule 1: Don't Invent MCP Tool Names
 Platform access flows exclusively through approved adapters. Coding models must strictly bind to the tool definitions declared in [`contracts/mcp_schemas/`](contracts/mcp_schemas/):
-- **Splunk MCP:** `query_unified_splunk_dossier`, `k8s_live_inventory_lookup`, `query_broad_anomaly_dossier`.
+- **Splunk MCP:** `query_splunk_dossier`, `k8s_live_inventory_lookup`, `query_broad_anomaly_dossier`.
 - **Prometheus MCP:** `query_prometheus_instant`, `query_prometheus_range`.
 Never invent fictional tool names or parameter schemas.
 

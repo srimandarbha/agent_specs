@@ -1,3 +1,71 @@
+---
+skill_id: 03-pod-termination-finalizer
+skill_version: 2.0.0
+title: Fail-Proof Diagnosis for Pod Termination or Finalizer Stalls
+lifecycle_stages:
+- drain
+- mcp_update
+trigger_signatures:
+- pattern: (?i)(error when waiting for pod.*to terminate|waiting for pod.*to terminate|failed
+    to drain node.*pod.*terminating)
+  source: ocp_logs
+- pattern: 'not_supported: no_pod_termination_error_logged'
+  source: ocp_logs
+- pattern: '
+
+
+    ### Step 1: Blocker Pod & Error Extraction
+
+    1. Extract '
+  source: ocp_logs
+supported_environments:
+  openshift_versions:
+  - 4.12+
+  - 4.16+
+  - 4.22+
+  - '5.0'
+  mco_versions:
+  - 4.12+
+  components:
+  - name: machine-config-controller
+  - name: machine-config-daemon
+  - name: kubelet
+  - name: kube-apiserver
+  - name: openshift-virtualization
+  - name: csi-driver
+required_evidence:
+- dataset: ocp_logs
+  kinds: &id001
+  - Pod
+  - Node
+  - Event
+  - Deployment
+  - ReplicaSet
+  max_age_seconds: 3600
+- dataset: k8s_objects
+  kinds: *id001
+  max_age_seconds: 300
+- dataset: prometheus
+  metrics:
+  - declared_by_skill_and_observability_matrix
+  max_age_seconds: 300
+freshness_limits_seconds:
+  node_and_lease: 120
+  pod_pdb_storage: 300
+  mcp_and_operator: 600
+decision_tree_version: 1.0.0
+prohibited_actions:
+- direct Kubernetes mutation
+- force deletion
+- unreviewed finalizer removal
+- unapproved AAP execution
+remediation_catalog_refs: []
+evaluation_fixtures:
+  negative: tests/fixtures/03-pod-termination-finalizer/negative_dossier.json
+owner: platform-sre
+status: draft
+---
+
 # Skill: Fail-Proof Diagnosis for Pod Termination or Finalizer Stalls (`03-pod-termination-finalizer`)
 
 <!-- precedence-note-2026-11-08 -->

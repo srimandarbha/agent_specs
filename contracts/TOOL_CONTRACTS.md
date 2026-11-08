@@ -1,90 +1,79 @@
-# Read-Only Tool Contracts & Remediation Specification
+# Read-Only Evidence Adapter Contracts and Remediation Output
 
-The agent operates in a **strictly read-only mode** during evidence gathering. It interacts with Splunk using parameterized templates. It has no direct Kubernetes client, no cluster-admin tokens, and no mutation capabilities. 
+The agent is strictly read-only during diagnosis. It has no direct Kubernetes client, cluster-admin token or mutation capability. Remediation is emitted as a recommendation and handed to a separately controlled human/AAP workflow.
 
-All remediation is generated as a structured specification (either an Ansible Automation Platform job spec or a manual CLI runbook) and handed off to human SREs or AAP.
+## 1. Adapter topology and naming
 
----
+The logical adapter boundary is **federated**:
 
-## 1. Unified Multi-Index Splunk Search (`query_unified_splunk_dossier`)
+| Adapter | Responsibility | Required capabilities |
+|---|---|---|
+| `splunk_mcp` | Logs, Events and normalized Kubernetes object snapshots/KV Store | bounded search, exact lookup, bounded list lookup |
+| `prometheus_mcp` | Time-series metrics | instant query and bounded range query |
 
-Instead of multiple sequential queries, the agent issues a single multi-index SPL search spanning container logs, K8s object snapshots/KV Store, and Prometheus metrics.
+The tool names and JSON schemas in `contracts/mcp_schemas/` define the **agent-facing adapter contract**. They are not a claim that a connected MCP server exposes identically named tools. At integration time, discover the actual server tools, map them to these logical operations, and record the mapping in deployment configuration. Contract tests must validate the real server schema and behavior. Do not silently substitute a similarly named tool.
 
-### Input Contract
-* `cluster_id` (string, required, validated against cluster allowlist).
-* `node_name` (string, optional, target draining node).
-* `time_window`: Enforces `earliest=-1h latest=now` for logs and metrics; `earliest=-24h` for K8s objects (or direct KV Store lookup).
-* `max_records`: Hard-capped at 200 records.
+An optional deployment may expose metrics through Splunk if Prometheus data is already indexed there. This is an alternate adapter implementation/profile. It must preserve metric timestamps, labels and source provenance and must not change the canonical evidence contract.
 
-### Output Contract
-Returns a normalized JSON list of correlated incident records:
-```json
-{
-  "status": "ok",
-  "observed_at": "2026-11-07T22:00:00Z",
-  "execution_time_ms": 4200,
-  "records": [
-    {
-      "cluster_id": "ocp-prod-01",
-      "target_namespace": "payments",
-      "target_resource": "payments-api-7b89-xyz",
-      "first_seen": "2026-11-07T21:10:00Z",
-      "last_seen": "2026-11-07T21:58:30Z",
-      "controller_eviction_errors": [
-        "Cannot evict pod as it would violate the pod's disruption budget."
-      ],
-      "objects_observed": ["Pod", "PodDisruptionBudget"],
-      "pdb_disruptions_allowed": [0],
-      "pdb_min_available": [1],
-      "active_finalizers": [],
-      "deletion_timestamp": null,
-      "storage_errors": [],
-      "desired_drain_annotation": ["true"],
-      "last_applied_drain_annotation": ["true"],
-      "relevant_metrics": [
-        "kube_pod_disruption_budget_status_pod_disruptions_allowed=0"
-      ]
-    }
-  ]
-}
-```
+## 2. Splunk logical operations
 
----
+### 2.1 `query_splunk_dossier`
 
-## 2. Splunk KV Store Lookup Contract (`k8s_live_inventory_lookup`)
+Returns bounded logs, Events and object snapshots for one authorized cluster and incident window.
 
-For environments using the Splunk KV Store for zero-compute object state:
-* **Lookup Name:** `k8s_live_inventory_lookup`
-* **Input Keys:** `cluster_id`, `namespace`, `name`
-* **Output Fields:** `pdb_disruptions_allowed`, `pod_finalizers`, `pod_deletion_timestamp`, `node_desired_drain`, `node_last_applied_drain`, `storage_detach_error`, `updated_at`.
-* **Latency SLA:** < 50 milliseconds.
+Required input:
+- `cluster_id`: registry-authorized cluster identifier.
+- `time_window`: one of the configured bounded windows; default `-1h`.
+- `max_records`: positive integer, hard-capped by deployment policy.
 
----
+Optional input:
+- `node_name`, `namespace`, `resource_kinds`, `keywords`.
 
-## 3. Bounded Broad Anomaly Search (`query_broad_anomaly_dossier`)
+The adapter must construct SPL from reviewed templates and escaped parameters. Never concatenate raw model output into SPL. Results must distinguish `ok`, `partial`, `empty`, `unsupported` and `error`. Each record must retain source index, event timestamp, ingestion timestamp and stable object identity when available.
 
-Used exclusively by **Track B (Exploratory Unknown Anomaly Track)** when an incident does not match any of the 16 known use cases. Executed deterministically by the Python engine (zero LLM tool calling).
+### 2.2 `k8s_live_inventory_lookup`
 
-### Input Contract
-* `cluster_id` (string, required)
-* `node_name` (string, required)
-* `time_window`: Enforces `earliest=-1h latest=now`.
-* `max_records`: Hard-capped at 50 records.
+This is a logical Splunk KV Store operation, not a Kubernetes API call.
 
-### SPL Query Template
-```spl
-(
-  (index=ocp_logs cluster_id="$cluster_id$" node="$node_name$" (level=error OR level=critical OR "failed" OR "timeout" OR "cannot" OR "denied"))
-  OR
-  (index=k8s_objects cluster_id="$cluster_id$" resource_kind="Event" involvedObject.name="$node_name$" type="Warning")
-  OR
-  (index=ocp_metrics cluster_id="$cluster_id$" node="$node_name$" metric_name IN ("kube_node_status_condition", "node_memory_utilization_ratio", "node_cpu_utilization_ratio"))
-)
-earliest=-1h latest=now
-| head 50
-```
+Required input:
+- `cluster_id`
+- `kind`
 
----
+Optional input:
+- `namespace`
+- `name` for exact lookup
+- `label_selector` only if the indexed collection supports it
+- `limit` and `cursor` for bounded list/pagination
+
+At least one of `name` or a supported list mode must be supplied. Exact lookup and list lookup are distinct modes. The adapter must not require `name` for list queries, and must not interpret a zero-row result as proof of nonexistence unless collection coverage and snapshot freshness are known.
+
+The supported kind allowlist is maintained in `contracts/mcp_schemas/splunk_mcp_tools.json` and must be kept aligned with `docs/OBSERVABILITY_MATRIX.md`. A requested kind absent from the configured collection returns `unsupported`.
+
+### 2.3 `query_broad_anomaly_dossier`
+
+Track B only. It runs after all 16 known skills fail their deterministic trigger gates. The Python policy layer constructs a single bounded Splunk query using the authorized cluster, incident window and optional node scope. The LLM does not generate or modify SPL. The result is exploratory evidence only and cannot match a playbook.
+
+## 3. Prometheus logical operations
+
+### 3.1 `query_prometheus_instant`
+
+Accepts a reviewed query-template identifier, validated parameter values and an evaluation timestamp. Raw arbitrary PromQL is not accepted from the LLM.
+
+### 3.2 `query_prometheus_range`
+
+Accepts a reviewed query-template identifier, validated parameters, start/end timestamps and a bounded step. Enforce maximum range, minimum step, series cap and response-size cap. Return the actual query, query reference, warnings, sample timestamps and source endpoint identity.
+
+Prometheus adapter errors, timeouts and partial responses must remain distinguishable from valid empty vectors/matrices.
+
+## 4. Cross-adapter execution and budgets
+
+- The evidence planner declares the required adapter calls for the selected skill.
+- Independent Splunk and Prometheus calls may execute concurrently.
+- Enforce both per-adapter call/time budgets and one end-to-end deadline.
+- Retry only explicitly transient failures, at most once by default, and only if the deadline permits.
+- Do not retry authorization, invalid query, schema, cluster-scope or version-gate failures.
+- Persist query references and adapter outcomes for auditability.
+- Never merge metrics and log/object rows into one pseudo-record merely because they share a cluster or node label. Correlation is a separate deterministic stage.
 
 ## 4. Remediation Output Contract
 

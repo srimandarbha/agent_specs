@@ -16,8 +16,8 @@ Diagnose **pod remains terminating or finalizer cleanup stalls**, isolate whethe
 2. **Confirm Lifecycle Stage**
    - Trigger signal: MCC log contains `error when waiting for pod ... to terminate`.
    - Confirm active stage is `drain` (node cordoned, pods evicting).
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Map MCC termination error pod to `k8s_objects` / KV Store.
    - Verify `metadata.deletionTimestamp` is set and evaluate `metadata.finalizers`.
@@ -36,7 +36,7 @@ Diagnose **pod remains terminating or finalizer cleanup stalls**, isolate whethe
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback or Storage Playbook) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback or Storage Playbook) -> PERSISTED`
 
 ---
 

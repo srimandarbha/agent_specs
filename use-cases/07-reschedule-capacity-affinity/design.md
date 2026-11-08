@@ -16,8 +16,8 @@ Diagnose **replacement workloads cannot schedule after eviction**, discriminate 
 2. **Confirm Lifecycle Stage**
    - Eviction of the original pod succeeded on the draining node, but the replacement pod is stuck in `phase: Pending`.
    - Scheduler emits `FailedScheduling` events naming the pending pod.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` across `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Extract `FailedScheduling` events from `index=k8s_objects`.
    - Parse scheduler rejection:
@@ -35,7 +35,7 @@ Diagnose **replacement workloads cannot schedule after eviction**, discriminate 
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> SCHEDULER_CONSTRAINT_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> SCHEDULER_CONSTRAINT_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
 
 ---
 

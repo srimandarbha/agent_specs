@@ -16,8 +16,8 @@ Diagnose **machine config daemon reports configuration drift**, determine whethe
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Node annotation `state` is `Degraded` or MCD logs report config drift.
    - Confirm active stage is `preflight` or `apply`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Match drifted file path or unit from MCD logs.
    - Retrieve Node `state` and `reason` annotations from KV Store.
@@ -36,7 +36,7 @@ Diagnose **machine config daemon reports configuration drift**, determine whethe
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

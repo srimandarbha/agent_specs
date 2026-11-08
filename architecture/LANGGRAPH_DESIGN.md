@@ -21,7 +21,7 @@ The agent operates in a **strictly read-only mode** with zero cluster mutation t
 
 ### Track A Nodes (Known Use Cases 01 - 16)
 5. `build_evidence_plan`: Formulate bounded query parameters for the unified Splunk multi-index search and KV Store lookup.
-6. `query_unified_splunk_dossier`: Execute a **single round-trip multi-index SPL search** spanning `ocp_logs`, `k8s_objects` / KV Store, and `ocp_metrics` (<10s).
+6. `query_splunk_dossier`: Execute a bounded Splunk query for logs, Events and object snapshots; Prometheus MCP is queried separately for metrics.
 7. `assess_evidence`: Validate timestamps, freshness, and contradictions; deduplicate evidence.
 8. `diagnose`: Evaluate evidence strictly against the loaded `skill.md` decision tree to rank hypotheses.
 9. `match_remediation_plan`: Evaluate diagnosed root cause against [`remediations/PLAYBOOK_CATALOG.json`](../remediations/PLAYBOOK_CATALOG.json):
@@ -58,7 +58,7 @@ The agent operates in a **strictly read-only mode** with zero cluster mutation t
 [build_evidence_plan]                      [build_broad_anomaly_plan]
        │                                          │
        ▼                                          ▼
-[query_unified_splunk_dossier]             [query_broad_anomaly_dossier]
+[query_splunk_dossier]             [query_broad_anomaly_dossier]
        │                                          │
        ▼                                          │
 [assess_evidence]                                 │
@@ -153,7 +153,7 @@ class InvestigationState(BaseModel):
 
 ## 11. Federated evidence adapter clarification (2026-11-08)
 
-The Track A path must not assume every required signal is indexed in Splunk. In the default deployment, `query_unified_splunk_dossier` retrieves indexed logs/object snapshots/events through Splunk MCP, while a separate Prometheus MCP adapter retrieves metric evidence. The evidence aggregation/correlation layer joins these responses into the canonical dossier. The one-query-per-investigation pattern is available only where adapter capabilities prove that all required evidence has been centralized in Splunk.
+The Track A path must not assume every required signal is indexed in Splunk. In the default deployment, `query_splunk_dossier` retrieves indexed logs/object snapshots/events through Splunk MCP, while a separate Prometheus MCP adapter retrieves metric evidence. The evidence aggregation/correlation layer joins these responses into the canonical dossier. The one-query-per-investigation pattern is available only within each adapter where its capabilities prove the required evidence can be returned within the configured bounds.
 
 The previous “max 2 Splunk calls” budget is scoped to Splunk requests and is not a total multi-adapter budget. The default Track A budget is one initial Splunk query, one initial Prometheus query, at most one targeted logical follow-up across either adapter, and at most one transient retry across the entire investigation. Count every transport attempt; do not exceed four external request attempts or the 45-second absolute deadline. Track B performs one bounded broad query and at most one transient retry, with one LLM synthesis call and no iterative tool loop.
 

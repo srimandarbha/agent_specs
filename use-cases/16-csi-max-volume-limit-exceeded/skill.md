@@ -1,3 +1,68 @@
+---
+skill_id: 16-csi-max-volume-limit-exceeded
+skill_version: 2.0.0
+title: Fail-Proof Diagnosis for CSI Max Volume Limit Exceeded on Node
+lifecycle_stages:
+- drain
+- mcp_update
+trigger_signatures:
+- pattern: 16-csi-max-volume-limit-exceeded
+  source: ocp_logs
+- pattern: reason == "FailedScheduling"
+  source: ocp_logs
+- pattern: '(?i)0/\d+ nodes are available: \d+ node\(s\) exceed max volume count'
+  source: ocp_logs
+supported_environments:
+  openshift_versions:
+  - 4.12+
+  - 4.16+
+  - 4.22+
+  - '5.0'
+  mco_versions:
+  - 4.12+
+  components:
+  - name: machine-config-controller
+  - name: machine-config-daemon
+  - name: kubelet
+  - name: kube-apiserver
+  - name: openshift-virtualization
+  - name: csi-driver
+required_evidence:
+- dataset: ocp_logs
+  kinds: &id001
+  - CSINode
+  - VolumeAttachment
+  - Node
+  - Pod
+  - PersistentVolumeClaim
+  - PersistentVolume
+  - Event
+  max_age_seconds: 3600
+- dataset: k8s_objects
+  kinds: *id001
+  max_age_seconds: 300
+- dataset: prometheus
+  metrics:
+  - declared_by_skill_and_observability_matrix
+  max_age_seconds: 300
+freshness_limits_seconds:
+  node_and_lease: 120
+  pod_pdb_storage: 300
+  mcp_and_operator: 600
+decision_tree_version: 1.0.0
+prohibited_actions:
+- direct Kubernetes mutation
+- force deletion
+- unreviewed finalizer removal
+- unapproved AAP execution
+remediation_catalog_refs: []
+evaluation_fixtures:
+  negative: tests/fixtures/16-csi-max-volume-limit-exceeded/negative_dossier.json
+  contradictory: tests/fixtures/16-csi-max-volume-limit-exceeded/contradictory_dossier.json
+owner: platform-sre
+status: draft
+---
+
 # Skill: Fail-Proof Diagnosis for CSI Max Volume Limit Exceeded on Node (`16-csi-max-volume-limit-exceeded`)
 
 <!-- precedence-note-2026-11-08 -->

@@ -16,8 +16,8 @@ Diagnose **api server or etcd latency prevents drain progress**, isolate whether
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Multiple operations report `context deadline exceeded` or `etcdserver: request timed out`.
    - Confirm active stage is `drain` or `rollout`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Inspect cluster-wide error footprint: timeouts affecting multiple nodes/namespaces simultaneously.
    - Query Prometheus metrics: `etcd_disk_wal_fsync_duration_seconds`, `etcd_mvcc_db_total_size_in_bytes`, `apiserver_request_duration_seconds`.
@@ -35,7 +35,7 @@ Diagnose **api server or etcd latency prevents drain progress**, isolate whether
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
 
 ---
 

@@ -1,3 +1,12 @@
+## Unreleased - feature branch contract reconciliation
+
+- Replaced the stale Splunk-only, single multi-index architecture in `intent.md` with the federated Splunk MCP + Prometheus MCP design declared by `manifest.json`.
+- Rewrote the logical evidence tool contracts and clarified that logical operation names must be mapped to actual discovered MCP server tools during integration.
+- Expanded the Splunk inventory contract to support the observability matrix object kinds and bounded exact/list lookup semantics.
+- Added machine-readable YAML front matter to all 16 skills. All remain `draft` until fixture coverage, domain review and evaluation gates pass.
+- Strengthened repository validation and MCP schema tests for skill metadata and inventory-kind coverage.
+- Preserved the known evaluation-fixture gap rather than creating empty or synthetic fixture files that would falsely imply test coverage.
+
 # Update changelog
 
 ## 2026-11-08: Shared agent contracts and implementation readiness

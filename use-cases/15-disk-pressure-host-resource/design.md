@@ -16,8 +16,8 @@ Diagnose **node disk pressure, ephemeral storage exhaustion, or PID saturation**
 2. **Confirm Lifecycle Stage**
    - Active stage: Node drain, MCD apply, or node readiness check.
    - Trigger signal: Node object condition `DiskPressure: True` or `PIDPressure: True`, or Kubelet/MCD write error logs.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` across `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Correlate `Node` conditions with Kubelet error logs and disk mount metrics.
    - Parse specific failure mode:
@@ -36,7 +36,7 @@ Diagnose **node disk pressure, ephemeral storage exhaustion, or PID saturation**
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> RESOURCE_PRESSURE_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> RESOURCE_PRESSURE_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
 
 ---
 

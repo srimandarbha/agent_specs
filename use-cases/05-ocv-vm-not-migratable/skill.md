@@ -1,3 +1,66 @@
+---
+skill_id: 05-ocv-vm-not-migratable
+skill_version: 2.0.0
+title: Fail-Proof Diagnosis for OpenShift Virtualization VM Not Live-Migratable
+lifecycle_stages:
+- drain
+- mcp_update
+trigger_signatures:
+- pattern: (?i)(virt-launcher-eviction-interceptor.*not live-migratable|cannot migrate
+    vmi|VMI is configured with an eviction strategy but is not live-migratable)
+  source: ocp_logs
+- pattern: InternalError
+  source: ocp_logs
+- pattern: MigrationNetworkDegraded
+  source: ocp_logs
+supported_environments:
+  openshift_versions:
+  - 4.12+
+  - 4.16+
+  - 4.22+
+  - '5.0'
+  mco_versions:
+  - 4.12+
+  components:
+  - name: machine-config-controller
+  - name: machine-config-daemon
+  - name: kubelet
+  - name: kube-apiserver
+  - name: openshift-virtualization
+  - name: csi-driver
+required_evidence:
+- dataset: ocp_logs
+  kinds: &id001
+  - Pod
+  - Node
+  - VirtualMachineInstance
+  - VirtualMachineInstanceMigration
+  - Event
+  max_age_seconds: 3600
+- dataset: k8s_objects
+  kinds: *id001
+  max_age_seconds: 300
+- dataset: prometheus
+  metrics:
+  - declared_by_skill_and_observability_matrix
+  max_age_seconds: 300
+freshness_limits_seconds:
+  node_and_lease: 120
+  pod_pdb_storage: 300
+  mcp_and_operator: 600
+decision_tree_version: 1.0.0
+prohibited_actions:
+- direct Kubernetes mutation
+- force deletion
+- unreviewed finalizer removal
+- unapproved AAP execution
+remediation_catalog_refs: []
+evaluation_fixtures:
+  negative: tests/fixtures/05-ocv-vm-not-migratable/negative_dossier.json
+owner: platform-sre
+status: draft
+---
+
 # Skill: Fail-Proof Diagnosis for OpenShift Virtualization VM Not Live-Migratable (`05-ocv-vm-not-migratable`)
 
 <!-- precedence-note-2026-11-08 -->

@@ -10,7 +10,7 @@
 - [ ] Confirm Prometheus metrics `kube_node_status_allocatable{resource=~"attachable_volumes.*"}` are indexed in `index=ocp_metrics`.
 
 ## Phase 1: Read-Only Evidence Tooling
-- [ ] Implement the parameterized **Unified Multi-Index Splunk Search** (`query_unified_splunk_dossier`).
+- [ ] Implement the parameterized **Splunk logs/object evidence query** (`query_splunk_dossier`).
 - [ ] Bound search time: `earliest=-1h latest=now` for logs/events/metrics; instant lookup for live KV store objects.
 - [ ] Normalize timestamps, cluster ID, pending pod name, namespace, candidate node list, and active volume counts into structured state.
 - [ ] Redact sensitive labels and volume source credentials.

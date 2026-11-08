@@ -66,6 +66,14 @@ status: "active"
 
 ---
 
+Additional required metadata fields used by the loader:
+- `freshness_limits_seconds`: named evidence-class freshness limits.
+- `decision_tree_version`: version of the decision logic associated with this skill.
+- `status`: one of `draft`, `candidate`, `active`, or `deprecated`. New or unqualified skills must be `draft`.
+- `owner`: accountable team or role. Do not invent an individual email address.
+
+`evaluation_fixtures` may contain fixture paths, but every referenced path must exist before a skill can be promoted beyond `draft`. Fixture presence alone does not mean the fixture is meaningful or that evaluation passed.
+
 ## 3. Constrained Rule Representation (Declarative AST)
 
 Rather than allowing arbitrary code execution or open-ended LLM hallucination of rules, diagnostic logic is expressed as a deterministic Abstract Syntax Tree (AST) composed of **Gates**, **Predicates**, **Evaluations**, and **Terminal Actions**.

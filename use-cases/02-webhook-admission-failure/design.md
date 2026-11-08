@@ -16,8 +16,8 @@ Diagnose **admission webhook blocks pod deletion or eviction**, distinguish thir
 2. **Confirm Lifecycle Stage**
    - Trigger signal: Eviction request rejected by admission webhook.
    - Confirm active stage is `drain`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Check webhook name: If `virt-launcher-eviction-interceptor`, handoff to `05-ocv-vm-not-migratable`.
    - Inspect webhook error reason from apiserver logs.
@@ -35,7 +35,7 @@ Diagnose **admission webhook blocks pod deletion or eviction**, distinguish thir
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (Manual CLI Fallback) -> PERSISTED`
 
 ---
 

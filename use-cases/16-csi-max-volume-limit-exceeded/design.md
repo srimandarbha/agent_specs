@@ -16,8 +16,8 @@ Diagnose **candidate node CSI volume attachment limit exhaustion** preventing po
 2. **Confirm Lifecycle Stage**
    - Workload eviction initiated on source node, or OCV VM migration triggered, but replacement placement is blocked.
    - Scheduler emits `FailedScheduling` events citing `exceed max volume count` or `AttachableVolumesLimitExceeded`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` across `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Execute Node Volume Tally Engine & Causal Classification**
    - From `index=k8s_objects`:
      - Retrieve active `VolumeAttachment` objects grouped by `spec.nodeName`.
@@ -39,7 +39,7 @@ Diagnose **candidate node CSI volume attachment limit exhaustion** preventing po
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> VOLUME_TALLY_CALCULATED -> ROOT_CAUSE_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> VOLUME_TALLY_CALCULATED -> ROOT_CAUSE_DIAGNOSED -> MANUAL_CLI_FALLBACK_GENERATED -> PERSISTED`
 
 ---
 

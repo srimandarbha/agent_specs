@@ -16,8 +16,8 @@ Diagnose **stale source virt-launcher pod after completed migration**, verify th
 2. **Confirm Lifecycle Stage**
    - Trigger signal: MCC log reports drain timeout waiting for pod `virt-launcher-*` to terminate.
    - Confirm active stage is `drain`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Extract VM name from `metadata.labels['vm.kubevirt.io/name']`.
    - Query KV Store for all launcher pods for that VM across the cluster.
@@ -36,7 +36,7 @@ Diagnose **stale source virt-launcher pod after completed migration**, verify th
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 

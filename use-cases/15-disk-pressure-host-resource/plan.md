@@ -10,7 +10,7 @@
 - [ ] Confirm Prometheus metrics `node_filesystem_avail_bytes`, `node_filesystem_files_free`, and `node_pids` are indexed in `index=ocp_metrics`.
 
 ## Phase 1: Read-Only Evidence Tooling
-- [ ] Implement the parameterized **Unified Multi-Index Splunk Search** (`query_unified_splunk_dossier`).
+- [ ] Implement the parameterized **Splunk logs/object evidence query** (`query_splunk_dossier`).
 - [ ] Bound search time: `earliest=-1h latest=now` for logs/events/metrics; instant lookup for live KV store objects.
 - [ ] Normalize timestamps, cluster ID, node name, filesystem mount points, and error excerpts into structured state.
 - [ ] Redact node IP addresses and environment secrets.

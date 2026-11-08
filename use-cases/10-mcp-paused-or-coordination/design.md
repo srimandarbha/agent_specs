@@ -16,8 +16,8 @@ Diagnose **mcp paused or rollout coordination prevents progress**, determine whe
 2. **Confirm Lifecycle Stage**
    - Trigger signal: MCP reports `spec.paused == true` or rollout does not begin.
    - Confirm active stage is `rollout-coordination`.
-3. **Execute Single Multi-Index Search**
-   - Query `query_unified_splunk_dossier` spanning `index=ocp_logs`, `index=k8s_objects` / KV Store, and `index=ocp_metrics`.
+3. **Execute Federated Evidence Queries**
+   - Query `query_splunk_dossier` for `index=ocp_logs` and `index=k8s_objects` / KV Store; query metrics separately through Prometheus MCP.
 4. **Causal Correlation & Classification**
    - Retrieve `MachineConfigPool` status from KV Store.
    - Traverse causal sub-tree:
@@ -36,7 +36,7 @@ Diagnose **mcp paused or rollout coordination prevents progress**, determine whe
 ---
 
 ## State Model
-`TRIGGERED -> CONTEXT_CAPTURED -> UNIFIED_DOSSIER_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
+`TRIGGERED -> CONTEXT_CAPTURED -> EVIDENCE_COLLECTED -> ROOT_CAUSE_DIAGNOSED -> REMEDIATION_MATCHED (AAP Playbook OR Manual CLI) -> PERSISTED`
 
 ---
 
