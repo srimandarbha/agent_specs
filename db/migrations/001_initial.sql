@@ -13,10 +13,10 @@ CREATE TABLE IF NOT EXISTS sre_investigations (
   lifecycle_stage TEXT NOT NULL DEFAULT 'unknown',
   use_case_id TEXT,
   skill_version TEXT,
-  status TEXT NOT NULL CHECK (status IN ('running','diagnosed','inconclusive','failed')) DEFAULT 'running',
-  diagnosis_status TEXT CHECK (diagnosis_status IN ('supported','probable','inconclusive','no_matching_skill','version_gate_failed')),
+  status TEXT NOT NULL CHECK (status IN ('running','diagnosed','inconclusive','unclassified_anomaly','failed')) DEFAULT 'running',
+  diagnosis_status TEXT CHECK (diagnosis_status IN ('supported','probable','inconclusive','no_matching_skill','version_gate_failed','unclassified_anomaly')),
   root_cause_hypothesis TEXT,
-  confidence_band TEXT CHECK (confidence_band IN ('low','medium','high')),
+  confidence_band TEXT CHECK (confidence_band IN ('low','medium','high','exploratory')),
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at TIMESTAMPTZ,
   deadline_at TIMESTAMPTZ,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS sre_hypotheses (
   rationale TEXT NOT NULL,
   supporting_evidence_ids UUID[] NOT NULL DEFAULT '{}',
   contradicting_evidence_ids UUID[] NOT NULL DEFAULT '{}',
-  confidence_band TEXT CHECK (confidence_band IN ('low','medium','high')),
+  confidence_band TEXT CHECK (confidence_band IN ('low','medium','high','exploratory')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -94,6 +94,7 @@ Tier 3 executes the complete 10-node graph against comprehensive test fixtures.
 2. **Negative Non-Fault Fixture:** The alert fired, but the pod has already scheduled or node is uncordoned. Assert diagnosis = `not_supported: pod_scheduled_successfully`, no remediation triggered.
 3. **Contradictory Telemetry Fixture:** MCC log claims eviction failure, but PDB snapshot reports `disruptionsAllowed: 2`. Assert agent triggers at most 1 bounded follow-up query and reports `inconclusive: contradictory_evidence`.
 4. **Backend Telemetry Outage Fixture:** Splunk mock returns HTTP 504. Assert agent outputs `inconclusive: telemetry_backend_unavailable` (never reports "cluster is healthy").
+5. **Track B Exploratory Unknown Anomaly Fixture:** Alert arrives for an unclassified fault (e.g., custom security agent holding cgroup lock). Assert: graph routes to Track B, executes exactly 1 broad Splunk search, invokes single LLM synthesis (zero iterative tool loops), enforces `playbook_match: false`, outputs `confidence: exploratory` with read-only `oc` commands, and terminates within 45s SLA.
 
 ---
 
