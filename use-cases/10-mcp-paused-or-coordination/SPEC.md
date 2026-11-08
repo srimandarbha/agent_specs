@@ -1,5 +1,8 @@
 # SPEC: MachineConfigPool Paused or Rollout Coordination Prevents Progress
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Problem Statement
 The diagnostic agent must identify whether an OpenShift MCP/upgrade stall is caused by **mcp paused or rollout coordination prevents progress**, determine whether the pause is a stale maintenance hold, an expected concurrency limit serialization, or a safety interlock due to a degraded configuration, and formulate an actionable remediation specification (Ansible Playbook spec or manual CLI fallback) without direct cluster mutation.
 

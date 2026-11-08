@@ -3,7 +3,7 @@
 **Use Case:** `12-mcd-config-render-apply`  
 **Version:** 2.0.0  
 **Harness Integration:** `tests/evals/test_tier3_scenarios.py`  
-**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/tests/EVALUATION_FRAMEWORK.md)
+**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](../../tests/EVALUATION_FRAMEWORK.md)
 
 ---
 

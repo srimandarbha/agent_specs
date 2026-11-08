@@ -1,0 +1,8 @@
+{
+  "classification": "inconclusive",
+  "confidence": "low",
+  "sub_branch": null,
+  "stop_reason": "pdb_state_stale",
+  "remediation_kind": "none",
+  "playbook_id": null
+}

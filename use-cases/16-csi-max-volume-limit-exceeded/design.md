@@ -1,5 +1,8 @@
 # Design: CSI Max Volume Limit Exceeded on Node (`16-csi-max-volume-limit-exceeded`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Design Objective
 Diagnose **candidate node CSI volume attachment limit exhaustion** preventing pod rescheduling or OCV virtual machine live migration, execute an automated node volume tally engine comparing active `VolumeAttachment`s against `CSINode` allocatable thresholds, and generate a safe, non-destructive manual CLI fallback runbook for cluster administrators without direct cluster mutation.
 

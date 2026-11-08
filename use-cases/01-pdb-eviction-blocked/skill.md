@@ -1,5 +1,8 @@
 # Skill: Fail-Proof Diagnosis for PodDisruptionBudget Blocks Eviction (`01-pdb-eviction-blocked`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 **Version:** 2.0.0  
 **Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
 **Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
@@ -175,7 +178,7 @@ The agent MUST halt and report `inconclusive` or `not_supported` if any of the f
 1. **Tool Failure:** The Splunk multi-index query times out or returns HTTP 5xx after 1 retry. Report: `inconclusive: telemetry_backend_unavailable`.
 2. **Missing PDB Record:** MCC log explicitly reports disruption budget denial, but neither `k8s_objects` nor KV Store contains a PDB matching the pod's namespace. Report: `probable: pdb_record_missing_from_cache`.
 3. **Selector Ambiguity:** Pod labels match multiple conflicting PDBs in the same namespace. Report: `inconclusive: multiple_overlapping_pdbs_detected`.
-4. **Stale Observation:** PDB status timestamp is older than 2 hours and no recent watch event exists. Report: `inconclusive: pdb_state_stale`.
+4. **Stale Observation:** PDB/Pod snapshot is older than the active-incident freshness limit (5 minutes, `docs/OBSERVABILITY_MATRIX.md`) and no recent change event exists. Report: `inconclusive: pdb_state_stale`.
 
 ---
 

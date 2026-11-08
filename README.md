@@ -1,5 +1,8 @@
 # MCO drain and MCP-stuck troubleshooting use-case pack
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](intent.md), [`LANGGRAPH_DESIGN.md` §11](architecture/LANGGRAPH_DESIGN.md), [`contracts/`](contracts) and [`OBSERVABILITY_MATRIX.md`](docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 This is an evidence-driven design pack for an OpenShift SRE diagnostic agent. It contains **16 use cases**, each with five dedicated documents:
 
 - `SPEC.md`: trigger, scope, evidence contract, acceptance criteria and safety requirements.
@@ -44,8 +47,8 @@ The pack utilizes a deterministic 10-node LangGraph design optimized for low-lat
 ### Selected operating decisions
 - **Trigger:** Alert-driven (`MachineConfigControllerDrainError`) and engineer-triggered.
 - **Evidence Pipeline:** Unified Splunk Multi-Index Search (`index=ocp_logs`, `index=k8s_objects` / KV Store, `index=ocp_metrics`) executing in a single round-trip (< 10 seconds).
-- **Data Minimization (Golden Six):** Object collection in OpenTelemetry is restricted to `Pod`, `PodDisruptionBudget`, `Node`, `VolumeAttachment`, `MachineConfigPool`, and `Event`, with `metadata.managedFields` stripped to prevent OOMKills.
-- **Remediation Model:** Two-tier handoff via [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json). Clean matches generate Ansible Automation Platform (AAP / AWX) execution specs. Unmatched or high-risk cases generate precise manual `oc` CLI runbooks with safety guardrails.
+- **Data Minimization (Golden Six):** (Superseded: common baseline plus per-use-case allowlist, see `docs/OBSERVABILITY_MATRIX.md`.) Original list, retained for history: `Pod`, `PodDisruptionBudget`, `Node`, `VolumeAttachment`, `MachineConfigPool`, and `Event`, with `metadata.managedFields` stripped to prevent OOMKills.
+- **Remediation Model:** Two-tier handoff via [`remediations/PLAYBOOK_CATALOG.json`](remediations/PLAYBOOK_CATALOG.json). Clean matches generate Ansible Automation Platform (AAP / AWX) execution specs. Unmatched or high-risk cases generate precise manual `oc` CLI runbooks with safety guardrails.
 - **Memory:** SQL-based episodic/curated memory in PostgreSQL (`db/migrations/001_initial.sql`).
 - **First vertical slice:** `01-pdb-eviction-blocked`.
 

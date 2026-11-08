@@ -13,7 +13,7 @@
   },
   "root_cause": {
     "summary": "Eviction blocked because payments-api-pdb disruption allowance is exhausted (disruptionsAllowed: 0). The Deployment payments-api is currently at its minimum healthy threshold (2/2 replicas healthy with minAvailable: 2).",
-    "sub_branch": "3A_multi_replica_at_min_available",
+    "sub_branch": "3B_multi_replica_at_min_available",
     "evidence_citations": [
       {
         "source": "ocp_logs",

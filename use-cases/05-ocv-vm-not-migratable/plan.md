@@ -1,5 +1,8 @@
 # Implementation Plan: OpenShift Virtualization VM Is Not Live-Migratable
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and obtain matching MCO source/runbook revision.
 - [ ] Align trigger signals in Splunk: MCC eviction log contains `virt-launcher-eviction-interceptor.kubevirt.io` denial.
@@ -21,7 +24,7 @@
   - Did live migration fail due to lack of schedulable target nodes?
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
-- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json):
   - Autonomous mutation of VM state is **strictly prohibited** (`matched: false`).
 - [ ] **Intelligent CLI Fallback:**
   - For non-shared storage: output runbook for controlled guest shutdown (`virtctl stop`) or PVC migration.

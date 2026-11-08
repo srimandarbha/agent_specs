@@ -3,12 +3,12 @@
 **Use Case:** `10-mcp-paused-or-coordination`  
 **Version:** 2.0.0  
 **Harness Integration:** `tests/evals/test_tier3_scenarios.py`  
-**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/tests/EVALUATION_FRAMEWORK.md)
+**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](../../tests/EVALUATION_FRAMEWORK.md)
 
 ---
 
 ## 1. Test Objective & Ground Truth
-Evaluate the agent's capability to ingest MachineConfigPool status and configuration snapshots, identify administrative or coordination blocks stalling node updates (`spec.paused: true`, `spec.maxUnavailable: 0`, or canary rollout barriers), verify prerequisites, and output either [`playbook_unpause_mcp`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json#L63-L78) or a manual CLI fallback.
+Evaluate the agent's capability to ingest MachineConfigPool status and configuration snapshots, identify administrative or coordination blocks stalling node updates (`spec.paused: true`, `spec.maxUnavailable: 0`, or canary rollout barriers), verify prerequisites, and output either [`playbook_unpause_mcp`](../../remediations/PLAYBOOK_CATALOG.json#L63-L78) or a manual CLI fallback.
 
 ---
 

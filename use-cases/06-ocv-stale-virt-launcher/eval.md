@@ -3,12 +3,12 @@
 **Use Case:** `06-ocv-stale-virt-launcher`  
 **Version:** 2.0.0  
 **Harness Integration:** `tests/evals/test_tier3_scenarios.py`  
-**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/tests/EVALUATION_FRAMEWORK.md)
+**Master Framework:** [`tests/EVALUATION_FRAMEWORK.md`](../../tests/EVALUATION_FRAMEWORK.md)
 
 ---
 
 ## 1. Test Objective & Ground Truth
-Evaluate the agent's capability to ingest MCC logs citing a stuck `virt-launcher` pod on the draining node, verify against VMI and migration telemetry that the virtual machine has **already completed migration** and is running healthy on a different node, and output the approved playbook [`playbook_cleanup_stale_virt_launcher`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json#L80-L99) with validated parameters.
+Evaluate the agent's capability to ingest MCC logs citing a stuck `virt-launcher` pod on the draining node, verify against VMI and migration telemetry that the virtual machine has **already completed migration** and is running healthy on a different node, and output the approved playbook [`playbook_cleanup_stale_virt_launcher`](../../remediations/PLAYBOOK_CATALOG.json#L80-L99) with validated parameters.
 
 ---
 

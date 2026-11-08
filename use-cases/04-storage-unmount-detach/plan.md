@@ -1,5 +1,8 @@
 # Implementation Plan: Storage Unmount or Detach Stalls Pod Termination
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 ## Phase 0: Ground Truth & Telemetry Alignment
 - [ ] Pin supported OpenShift release(s) and storage CSI driver versions (e.g. ODF/Ceph RBD, AWS EBS, Azure Disk, VMware vSphere).
 - [ ] Align trigger signals in Splunk: Kubelet or CSI logs match `(?i)(failed to unmount|unmountdevice failed|failed to detach|volume.*still attached|volumeattachment.*in use|device or resource busy)`.
@@ -20,7 +23,7 @@
   - Branch C: Is a host process holding open file descriptors on the mount (`device or resource busy`)?
 
 ## Phase 3: Two-Tier Remediation & Playbook Matching
-- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json):
+- [ ] **Catalog Matching:** Evaluate against [`remediations/PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json):
   - If Branch A (local CSI node daemon hang):
     - Match `playbook_restart_csi_driver`.
     - Generate `aap_extra_vars`: `{ target_cluster, draining_node, csi_driver_namespace, csi_driver_daemonset }`.

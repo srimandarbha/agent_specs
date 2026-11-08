@@ -1,5 +1,8 @@
 # Skill: Fail-Proof Diagnosis for CSI Max Volume Limit Exceeded on Node (`16-csi-max-volume-limit-exceeded`)
 
+<!-- precedence-note-2026-11-08 -->
+> **Precedence note (2026-11-08):** wording in this file that assumes a single Splunk query, Splunk-only evidence, a "2 Splunk calls" budget, a 10-node graph or a fixed "Golden Six" object list is superseded by [`intent.md` §8](../../intent.md), [`LANGGRAPH_DESIGN.md` §11](../../architecture/LANGGRAPH_DESIGN.md), [`contracts/`](../../contracts) and [`OBSERVABILITY_MATRIX.md`](../../docs/OBSERVABILITY_MATRIX.md). Diagnostic decision logic is unchanged. Freshness limits come from the matrix, not from this file.
+
 **Version:** 2.0.0  
 **Target Environment:** OpenShift 4.12+ / 4.16+ / 4.22+ / 5.0  
 **Execution Context:** LangGraph Deterministic Diagnostic Node (`load_skill` -> `assess_evidence` -> `diagnose` -> `match_remediation_plan`)  
@@ -109,7 +112,7 @@ CLI: Scale Worker MachineSet          CLI: Rebalance Workload PVCs           CLI
 > The diagnostic agent MUST NEVER execute autonomous playbooks to patch `CSINode` objects, modify CSI driver DaemonSet configurations, or alter `MAX_VOLUMES_PER_NODE` environment variables. Storage controller reconfiguration can cause active storage drivers to restart or drop existing iSCSI/NVMe/SAN sessions, resulting in storage detachment outages across healthy nodes.
 
 ### Playbook Matching Policy
-* **Ansible Playbook Catalog Match:** `playbook_match: null`. (No automated playbook exists in [`PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json) for cluster storage topology reconfiguration).
+* **Ansible Playbook Catalog Match:** `playbook_match: null`. (No automated playbook exists in [`PLAYBOOK_CATALOG.json`](../../remediations/PLAYBOOK_CATALOG.json) for cluster storage topology reconfiguration).
 * **Targeted Manual CLI Fallback:** SREs receive precise, copy-pasteable read-only diagnostic inspection commands and guarded remediation procedures.
 
 ---

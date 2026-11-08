@@ -91,7 +91,7 @@ earliest=-1h latest=now
 The LangGraph node `match_remediation_plan` outputs a structured payload with two mutually exclusive paths:
 
 ### Path A: Approved Remediation Matched (`ansible_pseudocode` & `aap_launch_spec`)
-Returned when the diagnosed root cause matches [`remediations/PLAYBOOK_CATALOG.json`](file:///home/sdarbha/Projects/mcp/mco-drain-troubleshooting-pack/remediations/PLAYBOOK_CATALOG.json) and all preconditions pass. 
+Returned when the diagnosed root cause matches [`remediations/PLAYBOOK_CATALOG.json`](../remediations/PLAYBOOK_CATALOG.json) and all preconditions pass. 
 
 On **Day 1**, the agent outputs the **Ansible YAML Pseudo-Code** and verified variables without requiring live AAP/AWX integration. In the **Final Phase**, it includes the `aap_launch_spec`:
 
