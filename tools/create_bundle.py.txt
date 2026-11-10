@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Build self-extracting single-file bundles for easy copy-pasting into VS Code."""
+import base64
+import io
+import os
+from pathlib import Path
+import tarfile
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXCLUDED_DIRS = {".git", "__pycache__", ".pytest_cache", ".system_generated"}
+EXCLUDED_EXTS = {".pyc", ".tar.gz", ".swp"}
+EXCLUDED_FILES = {"bundle_unpack.py", "repo_bundle.sh", "repo_bundle.txt", "consolidated_repo.txt"}
+
+
+def collect_files():
+    tar_buffer = io.BytesIO()
+    file_count = 0
+    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+        for root, dirs, files in os.walk(REPO_ROOT):
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+            for f in sorted(files):
+                if any(f.endswith(ext) for ext in EXCLUDED_EXTS) or f in EXCLUDED_FILES:
+                    continue
+                full_path = Path(root) / f
+                rel_path = full_path.relative_to(REPO_ROOT)
+                tar.add(full_path, arcname=str(rel_path))
+                file_count += 1
+    return tar_buffer.getvalue(), file_count
+
+
+def generate_python_unpacker(compressed_bytes: bytes, file_count: int, output_path: Path):
+    b64_payload = base64.b64encode(compressed_bytes).decode("ascii")
+    
+    # Wrap base64 payload into 80-char chunks for clean copying
+    lines = [b64_payload[i:i+80] for i in range(0, len(b64_payload), 80)]
+    payload_str = "\n".join(lines)
+    
+    script_content = f'''#!/usr/bin/env python3
+"""Single-File Self-Extracting Repository Unpacker.
+Usage:
+    1. Create a new file in VS Code (e.g. unpack.py) in an empty folder.
+    2. Paste this entire file into it and save.
+    3. Run in VS Code terminal: python3 unpack.py
+"""
+import base64
+import gzip
+import io
+import os
+from pathlib import Path
+import tarfile
+import sys
+
+PAYLOAD = """\\
+{payload_str}
+"""
+
+def main():
+    print(f"[*] Unpacking repository ({file_count} files)...")
+    target_dir = Path.cwd()
+    data = base64.b64decode(PAYLOAD.replace("\\n", "").strip())
+    
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        tar.extractall(target_dir)
+        names = tar.getnames()
+    
+    print(f"[+] Successfully extracted {{len(names)}} files and directories to {{target_dir}}")
+    print("[*] To verify installation, run:")
+    print("      pytest -q")
+    print("      python3 tests/validate_repo_contracts.py")
+    print("      python3 tools/build_reason_registry.py --check")
+
+if __name__ == "__main__":
+    main()
+'''
+    output_path.write_text(script_content, encoding="utf-8")
+    print(f"Generated Python self-unpacker: {output_path} ({len(script_content)} bytes)")
+
+
+def generate_shell_unpacker(compressed_bytes: bytes, file_count: int, output_path: Path):
+    b64_payload = base64.b64encode(compressed_bytes).decode("ascii")
+    lines = [b64_payload[i:i+80] for i in range(0, len(b64_payload), 80)]
+    payload_str = "\n".join(lines)
+    
+    script_content = f'''#!/usr/bin/env bash
+# Single-File Self-Extracting Shell Unpacker for VS Code Terminal
+# Usage: Paste into unpack.sh, then run: bash unpack.sh
+set -e
+echo "[*] Unpacking repository ({file_count} files)..."
+base64 -d << 'EOF' | tar -xz
+{payload_str}
+EOF
+echo "[+] Extraction complete!"
+echo "[*] Next steps: pytest -q"
+'''
+    output_path.write_text(script_content, encoding="utf-8")
+    print(f"Generated Shell unpacker: {output_path} ({len(script_content)} bytes)")
+
+
+def generate_text_bundle(output_path: Path):
+    """Plain-text concatenated bundle with simple inline delimiter."""
+    lines = []
+    file_count = 0
+    for root, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+        for f in sorted(files):
+            if any(f.endswith(ext) for ext in EXCLUDED_EXTS) or f in EXCLUDED_FILES or f == output_path.name:
+                continue
+            full_path = Path(root) / f
+            rel_path = full_path.relative_to(REPO_ROOT)
+            try:
+                content = full_path.read_text(encoding="utf-8")
+                lines.append(f"=== FILE: {rel_path} ===")
+                lines.append(content)
+                lines.append("=== END FILE ===\n")
+                file_count += 1
+            except UnicodeDecodeError:
+                continue
+    
+    bundle_text = "\n".join(lines)
+    output_path.write_text(bundle_text, encoding="utf-8")
+    print(f"Generated text bundle: {output_path} ({file_count} files, {len(bundle_text)} bytes)")
+
+
+def main():
+    print("[*] Collecting repository files...")
+    tar_bytes, count = collect_files()
+    print(f"[*] Compressed {count} files into {len(tar_bytes)} bytes.")
+    
+    generate_python_unpacker(tar_bytes, count, REPO_ROOT / "bundle_unpack.py")
+    generate_shell_unpacker(tar_bytes, count, REPO_ROOT / "repo_bundle.sh")
+    generate_text_bundle(REPO_ROOT / "consolidated_repo.txt")
+    print("[+] All bundle formats generated successfully.")
+
+
+if __name__ == "__main__":
+    main()
